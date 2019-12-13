@@ -3,6 +3,8 @@
 // Send questions to natehieter@gmail.com
 // ==========================================================================
 
+#include <memory>
+
 #include "simulationcraft.hpp"
 #include "rapidxml/rapidxml_print.hpp"
 
@@ -13,15 +15,15 @@ namespace { // UNNAMED NAMESPACE =========================================
 struct xml_cache_entry_t
 {
   std::shared_ptr<xml_node_t> root;
-  cache::era_t era;
-  xml_cache_entry_t() : root(), era( cache::era_t::IN_THE_BEGINNING ) { }
+  cache::cache_era era;
+  xml_cache_entry_t() : root(), era( cache::cache_era::IN_THE_BEGINNING ) { }
 };
 
 struct new_xml_cache_entry_t
 {
   std::shared_ptr<sc_xml_t> root;
-  cache::era_t era;
-  new_xml_cache_entry_t() : root(), era( cache::era_t::IN_THE_BEGINNING ) { }
+  cache::cache_era era;
+  new_xml_cache_entry_t() : root(), era( cache::cache_era::IN_THE_BEGINNING ) { }
 };
 
 typedef std::unordered_map<std::string, xml_cache_entry_t> xml_cache_t;
@@ -113,7 +115,7 @@ void xml_node_t::create_parameter( const std::string&      input,
   index++;
   simplify_xml( value_str );
 
-  parameters.push_back( xml_parm_t( name_str, value_str ) );
+  parameters.emplace_back( name_str, value_str );
 }
 
 // xml_node_t::create_node ==================================================
@@ -198,7 +200,7 @@ int xml_node_t::create_children( sim_t*                  sim,
             }
             return 0;
           }
-          parameters.push_back( xml_parm_t( "cdata", input.substr( index, finish - index ) ) );
+          parameters.emplace_back( "cdata", input.substr( index, finish - index ) );
           index = finish + 2;
         }
         else
@@ -233,7 +235,7 @@ int xml_node_t::create_children( sim_t*                  sim,
         }
         index++;
       }
-      parameters.push_back( xml_parm_t( ".", input.substr( start, index - start ) ) );
+      parameters.emplace_back( ".", input.substr( start, index - start ) );
     }
   }
 
@@ -315,7 +317,6 @@ xml_node_t* xml_node_t::split_path( std::string&       key,
 
 std::shared_ptr<xml_node_t> xml_node_t::get( sim_t*             sim,
                                              const std::string& url,
-                                             const std::string& cleanurl,
                                              cache::behavior_e  caching,
                                              const std::string& confirmation )
 {
@@ -326,7 +327,7 @@ std::shared_ptr<xml_node_t> xml_node_t::get( sim_t*             sim,
     return p -> second.root;
 
   std::string result;
-  if ( ! http::get( result, url, cleanurl, caching, confirmation ) )
+  if ( http::get( result, url, caching, confirmation ) != 200 )
     return std::shared_ptr<xml_node_t>();
 
   if ( std::shared_ptr<xml_node_t> node = xml_node_t::create( sim, result ) )
@@ -347,7 +348,7 @@ std::shared_ptr<xml_node_t> xml_node_t::get( sim_t*             sim,
 std::shared_ptr<xml_node_t> xml_node_t::create( sim_t* sim,
                                                 const std::string& input )
 {
-  std::shared_ptr<xml_node_t> root = std::shared_ptr<xml_node_t>( new xml_node_t( "root" ) );
+  std::shared_ptr<xml_node_t> root = std::make_shared<xml_node_t>( "root" );
 
   std::string buffer = input;
   std::string::size_type index = 0;
@@ -1018,7 +1019,7 @@ std::vector<sc_xml_t> sc_xml_t::get_children( const std::string& name )
   {
     if ( ! name.empty() || util::str_compare_ci( name, n -> name() ) )
     {
-      nodes.push_back( sc_xml_t( n ) );
+      nodes.emplace_back( n );
     }
   }
 
@@ -1194,7 +1195,7 @@ sc_xml_t sc_xml_t::create( sim_t* sim,
   }
 
   new_xml_cache_entry_t& c = new_xml_cache[ cache_key ];
-  c.root = std::shared_ptr<sc_xml_t>( new sc_xml_t( document, tmp_buf ) );
+  c.root = std::make_shared<sc_xml_t>( document, tmp_buf );
   c.era = cache::era();
 
   return *c.root;
@@ -1202,7 +1203,6 @@ sc_xml_t sc_xml_t::create( sim_t* sim,
 
 sc_xml_t sc_xml_t::get( sim_t* sim,
                         const std::string& url,
-                        const std::string& cleanurl,
                         cache::behavior_e caching,
                         const std::string& confirmation )
 {
@@ -1217,7 +1217,7 @@ sc_xml_t sc_xml_t::get( sim_t* sim,
   }
 
   std::string result;
-  if ( ! http::get( result, url, cleanurl, caching, confirmation ) )
+  if ( http::get( result, url, caching, confirmation ) != 200 )
     return sc_xml_t();
 
   return sc_xml_t::create( sim, result, url );

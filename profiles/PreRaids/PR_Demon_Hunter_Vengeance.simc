@@ -10,8 +10,8 @@ talents=1213121
 
 # Default consumables
 potion=steelskin_potion
-flask=currents
-food=bountiful_captains_feast
+flask=greater_flask_of_the_currents
+food=famine_evaluator_and_snack_table
 augmentation=battle_scarred
 
 # This default action priority list is automatically created based on your character.
@@ -27,16 +27,14 @@ actions.precombat+=/food
 # Snapshot raid buffed stats before combat begins and pre-potting is done.
 actions.precombat+=/snapshot_stats
 actions.precombat+=/potion
+actions.precombat+=/use_item,name=azsharas_font_of_power
 
 # Executed every time the actor is available.
 actions=auto_attack
 actions+=/consume_magic
-# ,if=!raid_event.adds.exists|active_enemies>1
-actions+=/use_item,slot=trinket1
-# ,if=!raid_event.adds.exists|active_enemies>1
-actions+=/use_item,slot=trinket2
 actions+=/call_action_list,name=brand,if=talent.charred_flesh.enabled
 actions+=/call_action_list,name=defensives
+actions+=/call_action_list,name=cooldowns
 actions+=/call_action_list,name=normal
 
 # Fiery Brand Rotation
@@ -47,6 +45,17 @@ actions.brand+=/immolation_aura,if=dot.fiery_brand.ticking
 actions.brand+=/fel_devastation,if=dot.fiery_brand.ticking
 actions.brand+=/infernal_strike,if=dot.fiery_brand.ticking
 actions.brand+=/sigil_of_flame,if=dot.fiery_brand.ticking
+
+actions.cooldowns=potion
+actions.cooldowns+=/concentrated_flame,if=(!dot.concentrated_flame_burn.ticking&!action.concentrated_flame.in_flight|full_recharge_time<gcd.max)
+actions.cooldowns+=/worldvein_resonance,if=buff.lifeblood.stack<3
+actions.cooldowns+=/memory_of_lucid_dreams
+# Default fallback for usable essences.
+actions.cooldowns+=/heart_essence
+actions.cooldowns+=/use_item,effect_name=cyclotronic_blast,if=buff.memory_of_lucid_dreams.down
+actions.cooldowns+=/use_item,name=ashvanes_razor_coral,if=debuff.razor_coral_debuff.down|debuff.conductive_ink_debuff.up&target.health.pct<31|target.time_to_die<20
+# Default fallback for usable items.
+actions.cooldowns+=/use_items
 
 # Defensives
 actions.defensives=demon_spikes
@@ -66,11 +75,11 @@ actions.normal+=/sigil_of_flame
 actions.normal+=/shear
 actions.normal+=/throw_glaive
 
-head=irontide_captains_hat,id=155888,bonus_id=4779/1512/4786/4775
-neck=heart_of_azeroth,id=158075,bonus_id=4932/4933/4936/1524,azerite_level=27
-shoulders=mantle_of_fastidious_machinations,id=158304,bonus_id=4779/1512/4786/4775
+head=irontide_captains_hat,id=155888,bonus_id=4779/1512/4786/4775,azerite_powers=479/30/85/13
+neck=heart_of_azeroth,id=158075,bonus_id=4929/1524,azerite_level=27
+shoulders=mantle_of_fastidious_machinations,id=158304,bonus_id=4779/1512/4786/4775,azerite_powers=157/461/83/13
 back=cloak_of_questionable_intent,id=159287,bonus_id=4779/1512/4786
-chest=spymasters_wrap,id=155860,bonus_id=4779/1512/4786/4775
+chest=spymasters_wrap,id=155860,bonus_id=4779/1512/4786/4775,azerite_powers=481/462/202/13
 wrists=sea_dogs_cuffs,id=158305,bonus_id=4779/1512/4786
 hands=gloves_of_corrupted_waters,id=159321,bonus_id=4779/1512/4786
 waist=belt_of_gleaming_determination,id=158306,bonus_id=4779/1512/4786
@@ -88,7 +97,7 @@ off_hand=warglaive_of_the_sand_queen,id=160110,bonus_id=4779/1512/4786,enchant=q
 # gear_agility=2883
 # gear_stamina=4465
 # gear_crit_rating=255
-# gear_haste_rating=1194
+# gear_haste_rating=1200
 # gear_mastery_rating=209
 # gear_versatility_rating=822
-# gear_armor=1427
+# gear_armor=1430

@@ -16,10 +16,10 @@ struct expiration_t : public event_t
   {
   }
 
-  virtual const char* name() const override
+  const char* name() const override
   { return "pet_expiration"; }
 
-  virtual void execute() override
+  void execute() override
   {
     pet.expiration = nullptr;
 
@@ -63,7 +63,7 @@ pet_t::pet_t( sim_t*             sim,
   owner -> pet_list.push_back( this );
 
   party = owner -> party;
-  regen_type = owner -> regen_type;
+  resource_regeneration = owner ->resource_regeneration;
 
   // Inherit owner's dbc state
   dbc.ptr = owner -> dbc.ptr;
@@ -103,14 +103,24 @@ double pet_t::composite_player_multiplier( school_e school ) const
   return m;
 }
 
+double pet_t::composite_player_target_multiplier( player_t* target, school_e school ) const
+{
+  double m = player_t::composite_player_target_multiplier( target, school );
+
+  if ( auto td = owner->get_target_data( target ) )
+    m *= 1.0 + td->debuff.condensed_lifeforce->check_value();
+
+  return m;
+}
+
 void pet_t::init()
 {
   player_t::init();
 
-  if ( regen_type == REGEN_DYNAMIC && owner -> regen_type == REGEN_DISABLED )
+  if (resource_regeneration == regen_type::DYNAMIC && owner ->resource_regeneration == regen_type::DISABLED )
   {
     sim -> errorf( "Pet %s has dynamic regen, while owner has disabled regen. Disabling pet regeneration also.", name() );
-    regen_type = REGEN_DISABLED;
+    resource_regeneration = regen_type::DISABLED;
   }
 }
 
@@ -214,17 +224,24 @@ void pet_t::create_buffs()
   }
   else
   {
-    sim -> print_debug( "Creating Auras, Buffs, and Debuffs for pet '{}'.", name() );
+    sim->print_debug( "Creating Auras, Buffs, and Debuffs for pet '{}'.", name() );
 
-    buffs.stunned = buff_creator_t( this, "stunned" ).max_stack( 1 );
+    buffs.stunned  = make_buff( this, "stunned" )
+      ->set_max_stack( 1 );
     buffs.movement = new movement_buff_t( this );
 
-    debuffs.casting = buff_creator_t( this, "casting" ).max_stack( 1 ).quiet( 1 );
+    // Blood of the Enemy Essence Major R3 increase crit damage buff
+    buffs.seething_rage = make_buff( this, "seething_rage", find_spell( 297126 ) )
+      ->set_default_value( find_spell( 297126 )->effectN( 1 ).percent() );
+
+    debuffs.casting = make_buff( this, "casting" )
+      ->set_max_stack( 1 )
+      ->set_quiet( true );
   }
 }
 
 void pet_t::assess_damage( school_e       school,
-                           dmg_e          type,
+                           result_amount_type          type,
                            action_state_t* s )
 {
   if ( ! is_add() && ( ! s -> action || s -> action -> aoe ) )
@@ -339,4 +356,17 @@ timespan_t pet_t::composite_active_time() const
   }
 
   return ptr -> iteration_uptime();
+}
+
+void pet_t::acquire_target( retarget_source event, player_t* context )
+{
+  player_t::acquire_target( event, context );
+
+  // Dynamic pets have to retarget all actions at this point, if they arise during iteration
+  if ( dynamic && event == retarget_source::SELF_ARISE )
+  {
+    range::for_each( action_list, [this, event, context]( action_t* action ) {
+      action->acquire_target( event, context, target );
+    } );
+  }
 }

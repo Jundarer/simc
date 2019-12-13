@@ -79,7 +79,7 @@ struct elixir_t : public action_t
     }
   }
 
-  virtual void execute() override
+  void execute() override
   {
     player_t& p = *player;
 
@@ -100,7 +100,7 @@ struct elixir_t : public action_t
     sim->print_log( "{} uses elixir {}.", p.name(), data -> name );
 
   }
-  virtual bool ready() override
+  bool ready() override
   {
     if ( ! player -> sim -> allow_flasks )
       return false;
@@ -171,7 +171,7 @@ struct mana_potion_t : public action_t
     harmful = false;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     sim -> print_log( "{} uses Mana potion", player -> name() );
     double gain = rng().range( min, max );
@@ -179,7 +179,7 @@ struct mana_potion_t : public action_t
     player -> potion_used = true;
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( player -> potion_used )
       return false;
@@ -217,17 +217,17 @@ struct health_stone_t : public heal_t
     target = player;
   }
 
-  virtual void reset() override
+  void reset() override
   { charges = 3; }
 
-  virtual void execute() override
+  void execute() override
   {
     assert( charges > 0 );
     --charges;
     heal_t::execute();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( charges <= 0 )
       return false;
@@ -271,7 +271,7 @@ struct dbc_consumable_base_t : public action_t
     target = player;
   }
 
-  expr_t* create_expression( const std::string& name_str ) override
+  std::unique_ptr<expr_t> create_expression( const std::string& name_str ) override
   {
     auto split = util::string_split( name_str, "." );
     if ( split.size() == 2 && util::str_compare_ci( split[ 0 ], "consumable" ) )
@@ -336,7 +336,7 @@ struct dbc_consumable_base_t : public action_t
       {
         initialize_consumable();
       }
-      catch (const std::exception& e)
+      catch (const std::exception&)
       {
         std::throw_with_nested( std::invalid_argument(fmt::format("Unable to initialize consumable '{}' from '{}'",
             signature_str, consumable_name)));
@@ -389,6 +389,10 @@ struct dbc_consumable_base_t : public action_t
     {
       throw std::invalid_argument("Unable to find consumable.");
     }
+
+    // populate ID and spell data for better reporting
+    id = driver() -> id();
+    s_data_reporting = driver();
 
     auto effect = unique_gear::find_special_effect( player, driver() -> id(), SPECIAL_EFFECT_USE );
     // No special effect for this consumable found, so create one
@@ -536,12 +540,13 @@ struct crystal_of_insanity_t : public flask_base_t
 struct potion_t : public dbc_consumable_base_t
 {
   timespan_t pre_pot_time;
+  bool dynamic_prepot;
 
   potion_t( player_t* p, const std::string& options_str ) :
-    dbc_consumable_base_t( p, "potion" ),
-    pre_pot_time( timespan_t::from_seconds( 2.0 ) )
+    dbc_consumable_base_t( p, "potion" ), pre_pot_time( 2_s ), dynamic_prepot( false )
   {
     add_option( opt_timespan( "pre_pot_time", pre_pot_time ) );
+    add_option( opt_bool( "dynamic_prepot", dynamic_prepot ) );
     parse_options( options_str );
 
     type = ITEM_SUBCLASS_POTION;
@@ -596,8 +601,38 @@ struct potion_t : public dbc_consumable_base_t
     }
   }
 
+  void adjust_dynamic_prepot_time()
+  {
+    auto apl = player->precombat_action_list;
+
+    auto it = range::find( apl, this );
+    if ( it == apl.end() )
+      return;
+
+    pre_pot_time = 0_ms;
+
+    std::find_if( it + 1, apl.end(), [this]( action_t* a ) {
+      if ( a->action_ready() )
+      {
+        timespan_t delta =
+          std::max( std::max( a->base_execute_time, a->trigger_gcd ) * a->composite_haste(), a->min_gcd );
+        sim->print_debug( "PRECOMBAT: {} pre-pot timing pushed by {} for {}", consumable_name, delta, a->name() );
+        pre_pot_time += delta;
+
+        return a->harmful;
+      }
+      return false;
+    } );
+
+    sim->print_debug( "PRECOMBAT: {} quaffed {}s before combat.", consumable_name, pre_pot_time );
+  }
+
   void update_ready( timespan_t cd_duration = timespan_t::min() ) override
   {
+    // dynamic pre-pot timing adjustment
+    if ( dynamic_prepot && !player->in_combat )
+      adjust_dynamic_prepot_time();
+
     // If the player is in combat, just make a very long CD
     if ( player -> in_combat )
       cd_duration = sim -> max_time * 3;
@@ -836,6 +871,7 @@ const std::map<std::string, unsigned> food_t::__map = {
   { "felmouth_frenzy",          188534 },
   { "lemon_herb_filet",         185736 },
   { "sugarcrusted_fish_feast",  185736 },
+  { "fancy_darkmoon_feast",     185786 },
 };
 
 } // END UNNAMED NAMESPACE

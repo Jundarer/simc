@@ -307,7 +307,7 @@ struct mark_of_the_distant_army_t : public proc_spell_t
     // for attack power calculations. Weird
 
     // Hardcoded somewhere in the bowels of the server
-    ap_type = AP_NO_WEAPON;
+    ap_type = attack_power_type::NO_WEAPON;
     tick_may_crit = false;
     attack_power_mod.tick = ( 0.6375 / 3.0 );
     spell_power_mod.tick = ( 0.51 / 3.0 );
@@ -341,8 +341,8 @@ struct mark_of_the_distant_army_t : public proc_spell_t
   }
 
   // Hack to force defender to mitigate the damage with armor.
-  void assess_damage( dmg_e, action_state_t* s ) override
-  { proc_spell_t::assess_damage( DMG_DIRECT, s ); }
+  void assess_damage( result_amount_type, action_state_t* s ) override
+  { proc_spell_t::assess_damage( result_amount_type::DMG_DIRECT, s ); }
 };
 
 void enchants::mark_of_the_distant_army( special_effect_t& effect )
@@ -380,7 +380,7 @@ void enchants::mark_of_the_hidden_satyr( special_effect_t& effect )
       // for attack power calculations. Weird
 
       // Hardcoded somewhere in the bowels of the server
-      ap_type = AP_NO_WEAPON;
+      ap_type = attack_power_type::NO_WEAPON;
       attack_power_mod.direct = 0.653;
       spell_power_mod.direct = 0.522;
     }
@@ -577,9 +577,9 @@ void item::giant_ornamental_pearl( special_effect_t& effect )
 
 void item::gnawed_thumb_ring( special_effect_t& effect )
 {
-  effect.custom_buff = buff_creator_t( effect.player, "taste_of_mana", effect.player -> find_spell( 228461 ), effect.item )
-    .add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER )
-    .default_value( effect.player -> find_spell( 228461 ) -> effectN( 1 ).percent() );
+  effect.custom_buff = make_buff( effect.player, "taste_of_mana", effect.player -> find_spell( 228461 ), effect.item )
+    ->add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER )
+    ->set_default_value( effect.player -> find_spell( 228461 ) -> effectN( 1 ).percent() );
 
   effect.player -> buffs.taste_of_mana = effect.custom_buff;
 }
@@ -870,9 +870,9 @@ void item::impact_tremor( special_effect_t& effect )
   action_t* stampede = effect.create_action();
   effect.trigger_spell_id = 0;
 
-  effect.custom_buff = buff_creator_t( effect.player, "devilsaurs_stampede", effect.driver() -> effectN( 1 ).trigger(), effect.item )
-    .tick_zero( true )
-    .tick_callback( [ stampede ]( buff_t*, int, const timespan_t& ) {
+  effect.custom_buff = make_buff( effect.player, "devilsaurs_stampede", effect.driver() -> effectN( 1 ).trigger(), effect.item )
+    ->set_tick_zero( true )
+    ->set_tick_callback( [ stampede ]( buff_t*, int, const timespan_t& ) {
       stampede -> schedule_execute();
     } );
 
@@ -944,10 +944,11 @@ struct solar_collapse_t : public buff_t
   action_t* damage_event;
 
   solar_collapse_t( const actor_pair_t& p, const special_effect_t& source_effect ) :
-    buff_t( buff_creator_t( p, "solar_collapse", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item )
-                                  .duration( timespan_t::from_seconds( 3.0 ) ) ),
-                                  damage_event( source -> find_action( "solar_collapse_damage" ) )
-  { }
+    buff_t(  p, "solar_collapse", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item ),
+    damage_event( source -> find_action( "solar_collapse_damage" ) )
+  {
+    set_duration( timespan_t::from_seconds( 3.0 ) );
+  }
 
   void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
   {
@@ -965,9 +966,9 @@ struct fury_of_the_burning_sun_constructor_t : public item_targetdata_initialize
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if( effect == 0 )
+    if( effect == nullptr )
     {
-      td -> debuff.solar_collapse = buff_creator_t( *td, "solar_collapse" );
+      td -> debuff.solar_collapse = make_buff( *td, "solar_collapse" );
     }
     else
     {
@@ -1022,7 +1023,7 @@ struct thunder_ritual_impact_t : public proc_spell_t
     base_dd_min = base_dd_max = data().effectN( 1 ).average( effect.item ) * chest_multiplier;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     // Reset pair checking
     pair_buffed = false;
@@ -1051,10 +1052,11 @@ struct thunder_ritual_t : public buff_t
   action_t* damage_event;
 
   thunder_ritual_t( const actor_pair_t& p, const special_effect_t& source_effect ) :
-    buff_t( buff_creator_t( p, "thunder_ritual", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item )
-                                  .duration( timespan_t::from_seconds( 3.0 ) ) ),
+    buff_t( p, "thunder_ritual", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item ),
                                   damage_event( source -> find_action( "thunder_ritual_damage" ) )
-  {}
+  {
+    set_duration( timespan_t::from_seconds( 3.0 ) );
+  }
 
   void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
   {
@@ -1092,9 +1094,9 @@ struct mrrgrias_favor_constructor_t : public item_targetdata_initializer_t
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if( effect == 0 )
+    if( effect == nullptr )
     {
-      td -> debuff.thunder_ritual = buff_creator_t( *td, "thunder_ritual" );
+      td -> debuff.thunder_ritual = make_buff( *td, "thunder_ritual" );
     }
     else
     {
@@ -1671,8 +1673,8 @@ void item::khazgoroths_courage( special_effect_t& effect )
   secondary_cb -> initialize();
   secondary_cb -> deactivate();
 
-  effect.custom_buff = buff_creator_t( effect.player, "worldforgers_flame", effect.trigger(), effect.item )
-    .stack_change_callback( [ secondary_cb ]( buff_t*, int, int new_ ) {
+  effect.custom_buff = make_buff( effect.player, "worldforgers_flame", effect.trigger(), effect.item )
+    ->set_stack_change_callback( [ secondary_cb ]( buff_t*, int, int new_ ) {
       if ( new_ == 1 ) secondary_cb -> activate();
       else             secondary_cb -> deactivate();
     } );
@@ -1769,7 +1771,7 @@ void item::golganneths_vitality( special_effect_t& effect )
 {
   // Golganneth's Vitality has a separate mark buff that is used in the pantheon empower system,
   // since the trinket effect itself generates no buff
-  buff_t* mark_buff = buff_creator_t( effect.player, "mark_of_golganneth", effect.driver() -> effectN( 2 ).trigger() );
+  buff_t* mark_buff = make_buff( effect.player, "mark_of_golganneth", effect.driver() -> effectN( 2 ).trigger() );
 
   new golganneths_vitality_proc_t( effect, mark_buff );
 
@@ -1789,8 +1791,8 @@ void item::golganneths_vitality( special_effect_t& effect )
   secondary_cb -> deactivate();
 
   auto empower_spell = effect.player -> find_spell( 256833 );
-  buff_t* empower_buff = buff_creator_t( effect.player, "golganneths_thunderous_wrath", empower_spell, effect.item )
-    .stack_change_callback( [ secondary_cb ]( buff_t*, int, int new_ ) {
+  buff_t* empower_buff = make_buff( effect.player, "golganneths_thunderous_wrath", empower_spell, effect.item )
+    ->set_stack_change_callback( [ secondary_cb ]( buff_t*, int, int new_ ) {
       if ( new_ == 1 ) secondary_cb -> activate();
       else             secondary_cb -> deactivate();
     } );
@@ -1872,8 +1874,8 @@ void item::norgannons_prowess( special_effect_t& effect )
   secondary_cb -> deactivate();
 
   auto empower_spell = effect.player -> find_spell( 256836 );
-  buff_t* empower_buff = buff_creator_t( effect.player, "norgannons_command", empower_spell, effect.item )
-    .stack_change_callback( [ secondary_cb ]( buff_t* b, int, int new_ ) {
+  buff_t* empower_buff = make_buff( effect.player, "norgannons_command", empower_spell, effect.item )
+    ->set_stack_change_callback( [ secondary_cb ]( buff_t* b, int, int new_ ) {
       if ( new_ == b -> max_stack() ) secondary_cb -> activate();
       else if ( new_ == 0           ) secondary_cb -> deactivate();
     } );
@@ -2052,12 +2054,12 @@ struct reverberating_vitality_t : public proc_spell_t
     max_amount( effect.driver() -> effectN( 2 ).average( effect.item ) ), amount( 0.0 )
   { }
 
-  virtual timespan_t travel_time() const override
+  timespan_t travel_time() const override
   {
     return timespan_t::from_seconds( data().missile_speed() );
   }
 
-  virtual void execute() override
+  void execute() override
   {
     proc_spell_t::execute();
 
@@ -2066,7 +2068,7 @@ struct reverberating_vitality_t : public proc_spell_t
     amount *= 0.5 + target -> health_percentage() * 0.005;
   }
 
-  virtual void impact( action_state_t* s ) override
+  void impact( action_state_t* s ) override
   {
     proc_spell_t::impact( s );
 
@@ -2114,13 +2116,13 @@ struct legion_bombardment_t : public proc_spell_t
     tick( create_proc_action<legion_bombardment_tick_t>( "legion_bombardment_tick", effect ) )
   { }
 
-  virtual timespan_t travel_time() const override
+  timespan_t travel_time() const override
   {
     // Doesn't seem to vary with distance.
     return timespan_t::from_seconds( 2.0 );
   }
 
-  virtual void impact( action_state_t* s ) override
+  void impact( action_state_t* s ) override
   {
     proc_spell_t::impact( s );
 
@@ -2157,15 +2159,15 @@ struct shadow_blades_constructor_t : public item_targetdata_initializer_t
 
     if ( ! effect )
     {
-      td -> debuff.shadow_blades = buff_creator_t( *td, "shadow_blades_debuff" );
+      td -> debuff.shadow_blades = make_buff( *td, "shadow_blades_debuff" );
     }
     else
     {
       assert( ! td -> debuff.shadow_blades );
 
       auto spell = effect -> player -> find_spell( 253265 );
-      td -> debuff.shadow_blades = buff_creator_t( *td, "shadow_blades_debuff", spell, effect -> item )
-        .default_value( spell -> effectN( 2 ).percent() );
+      td -> debuff.shadow_blades = make_buff( *td, "shadow_blades_debuff", spell, effect -> item )
+        ->set_default_value( spell -> effectN( 2 ).percent() );
       td -> debuff.shadow_blades -> reset();
     }
   }
@@ -2184,7 +2186,7 @@ struct shadow_blade_t : public proc_spell_t
     base_dd_min = base_dd_max = 150.0;
   }
 
-  virtual double composite_target_multiplier( player_t* target ) const override
+  double composite_target_multiplier( player_t* target ) const override
   {
     double ctm = proc_spell_t::composite_target_multiplier( target );
 
@@ -2193,7 +2195,7 @@ struct shadow_blade_t : public proc_spell_t
     return ctm;
   }
 
-  virtual void impact( action_state_t* s ) override
+  void impact( action_state_t* s ) override
   {
     proc_spell_t::impact( s );
 
@@ -2207,12 +2209,12 @@ struct shadow_blades_buff_t : public buff_t
   int blade_count;
 
   shadow_blades_buff_t( const special_effect_t& effect ) :
-    buff_t( buff_creator_t( effect.player, "shadow_blades", effect.player -> find_spell( 253264 ), effect.item ) ),
+    buff_t( effect.player, "shadow_blades", effect.player -> find_spell( 253264 ), effect.item ),
     shadow_blade( create_proc_action<shadow_blade_t>( "shadow_blade", effect ) ),
-    blade_count( effect.driver() -> effectN( 3 ).base_value() )
+    blade_count( as<int>(effect.driver() -> effectN( 3 ).base_value()) )
   { }
 
-  virtual void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
+  void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
   {
     buff_t::expire_override( expiration_stacks, remaining_duration );
 
@@ -2244,7 +2246,7 @@ struct gorshalach_legacy_t : public proc_spell_t
   }
 
   // Always crits.
-  virtual double composite_crit_chance() const override { return 1.0; }
+  double composite_crit_chance() const override { return 1.0; }
 };
 
 struct gorshalach_bigger_legacy_t : public proc_spell_t
@@ -2258,7 +2260,7 @@ struct gorshalach_bigger_legacy_t : public proc_spell_t
   }
 
   // Always crits.
-  virtual double composite_crit_chance() const override { return 1.0; }
+  double composite_crit_chance() const override { return 1.0; }
 };
 
 struct echo_of_gorshalach_cb_t : public dbc_proc_callback_t
@@ -2289,7 +2291,7 @@ void item::gorshalach_legacy( special_effect_t& effect )
   buff_t* echo = buff_t::find( effect.player, "echo_of_gorshalach" );
   if ( ! echo )
   {
-    echo = buff_creator_t( effect.player, "echo_of_gorshalach", effect.player -> find_spell( 253327 ), effect.item );
+    echo = make_buff( effect.player, "echo_of_gorshalach", effect.player -> find_spell( 253327 ), effect.item );
   }
 
   effect.custom_buff = echo;
@@ -2312,7 +2314,7 @@ struct shadow_strike_t: public proc_spell_t
   shadow_strike_t( const special_effect_t& effect ) :
     proc_spell_t( "shadow_strike", effect.player, effect.trigger(), effect.item ),
     isolated_strike( create_proc_action<isolated_strike_t>( "isolated_strike", effect ) ),
-    target_radius( effect.driver() -> effectN( 1 ).base_value() )
+    target_radius( as<int>(effect.driver() -> effectN( 1 ).base_value()) )
   {
     add_child( isolated_strike );
   }
@@ -2364,12 +2366,12 @@ struct fire_mines_driver_t : public dbc_proc_callback_t
       event_t( *a -> player, delay ), action( a ), target( t ), x( x_ ), y( y_ ), active_mines( am )
     { }
 
-    virtual const char* name() const override
+    const char* name() const override
     {
       return "fire_mine_explosion";
     }
 
-    virtual void execute() override
+    void execute() override
     {
       action -> set_target( target );
 
@@ -2636,9 +2638,9 @@ void item::riftworld_codex( special_effect_t& effect )
 
   buffs = {
     make_buff<absorb_buff_t>( effect.player, "light_of_absolarn", effect.player -> find_spell( 252545 ), effect.item ),
-    buff_creator_t( effect.player, "winds_of_kareth", effect.player -> find_spell( 251938 ), effect.item ),
-    buff_creator_t( effect.player, "flames_of_ruvaraad", effect.player -> find_spell( 256415 ), effect.item )
-      .tick_callback( [ damage ] ( buff_t*, int, const timespan_t& ) {
+    make_buff( effect.player, "winds_of_kareth", effect.player -> find_spell( 251938 ), effect.item ),
+    make_buff( effect.player, "flames_of_ruvaraad", effect.player -> find_spell( 256415 ), effect.item )
+      ->set_tick_callback( [ damage ] ( buff_t*, int, const timespan_t& ) {
         damage -> schedule_execute();
       } )
   };
@@ -2679,7 +2681,7 @@ struct flame_gale_driver_t : spell_t
     background = true;
   }
 
-  virtual void impact( action_state_t* s )
+  void impact( action_state_t* s ) override
   {
     spell_t::impact( s );
       make_event<ground_aoe_event_t>( *sim, player, ground_aoe_params_t()
@@ -2958,9 +2960,9 @@ struct spiked_counterweight_constructor_t : public item_targetdata_initializer_t
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if ( effect == 0 )
+    if ( effect == nullptr )
     {
-      td -> debuff.brutal_haymaker = buff_creator_t( *td, "brutal_haymaker" );
+      td -> debuff.brutal_haymaker = make_buff( *td, "brutal_haymaker" );
     }
     else
     {
@@ -2984,8 +2986,8 @@ struct spiked_counterweight_constructor_t : public item_targetdata_initializer_t
       callback -> deactivate();
 
       // Create debuff with stack callback.
-      td -> debuff.brutal_haymaker = buff_creator_t( *td, "brutal_haymaker", effect -> trigger() )
-        .stack_change_callback( [ callback ]( buff_t*, int old, int new_ )
+      td -> debuff.brutal_haymaker = make_buff( *td, "brutal_haymaker", effect -> trigger() )
+        ->set_stack_change_callback( [ callback ]( buff_t*, int old, int new_ )
         {
           if ( old == 0 ) {
             assert( ! callback -> active );
@@ -2993,7 +2995,7 @@ struct spiked_counterweight_constructor_t : public item_targetdata_initializer_t
           } else if ( new_ == 0 )
             callback -> deactivate();
         } )
-        .default_value( effect -> driver() -> effectN( 1 ).trigger() -> effectN( 3 ).average( effect -> item ) );
+        ->set_default_value( effect -> driver() -> effectN( 1 ).trigger() -> effectN( 3 ).average( effect -> item ) );
       td -> debuff.brutal_haymaker -> reset();
 
       // Set pointer to debuff so the callback can do its thing.
@@ -3273,7 +3275,7 @@ struct ceaseless_toxin_t : public proc_spell_t
         return;
       }
 
-      target -> callbacks_on_demise.push_back( [ this ]( player_t* actor ) {
+      target -> callbacks_on_demise.emplace_back([ this ]( player_t* actor ) {
         if ( get_dot( actor ) -> is_ticking() )
         {
           cooldown -> adjust( -timespan_t::from_seconds( data().effectN( 3 ).base_value() ) );
@@ -3295,9 +3297,9 @@ void item::windscar_whetstone( special_effect_t& effect )
   action_t* maelstrom = effect.create_action();
   maelstrom -> cooldown -> duration = timespan_t::zero(); // damage spell has erroneous cooldown
 
-  effect.custom_buff = buff_creator_t( effect.player, "slicing_maelstrom", effect.driver(), effect.item )
-    .tick_zero( true )
-    .tick_callback( [ maelstrom ]( buff_t*, int, const timespan_t& ) {
+  effect.custom_buff = make_buff( effect.player, "slicing_maelstrom", effect.driver(), effect.item )
+    ->set_tick_zero( true )
+    ->set_tick_callback( [ maelstrom ]( buff_t*, int, const timespan_t& ) {
       maelstrom -> schedule_execute();
     } );
 
@@ -3410,9 +3412,9 @@ void item::nightblooming_frond( special_effect_t& effect )
   buff_t* b = buff_t::find( effect.player, "recursive_strikes" );
   if ( b == nullptr )
   {
-    b = buff_creator_t( effect.player, "recursive_strikes", effect.trigger() )
-      .refresh_behavior( buff_refresh_behavior::DISABLED ) // Don't refresh duration when the buff gains stacks
-      .stack_change_callback( [ cb ]( buff_t*, int old_, int new_ ) {
+    b = make_buff( effect.player, "recursive_strikes", effect.trigger() )
+      ->set_refresh_behavior( buff_refresh_behavior::DISABLED ) // Don't refresh duration when the buff gains stacks
+      ->set_stack_change_callback( [ cb ]( buff_t*, int old_, int new_ ) {
         if ( old_ == 0 ) // Buff goes up the first time
         {
           cb -> activate();
@@ -3813,23 +3815,23 @@ void item::tirathons_betrayal( special_effect_t& effect )
   }
 
   // Special effect to drive the AOE damage callback
-  special_effect_t* dmg_effect = new special_effect_t( effect.item );
-  dmg_effect -> source = SPECIAL_EFFECT_SOURCE_ITEM;
-  dmg_effect -> name_str = "darkstrikes_driver";
-  dmg_effect -> spell_id = effect.driver() -> id();
-  dmg_effect -> cooldown_ = timespan_t::zero();
-  effect.player -> special_effects.push_back( dmg_effect );
+  special_effect_t* result_amount_typeffect = new special_effect_t( effect.item );
+  result_amount_typeffect -> source = SPECIAL_EFFECT_SOURCE_ITEM;
+  result_amount_typeffect -> name_str = "darkstrikes_driver";
+  result_amount_typeffect -> spell_id = effect.driver() -> id();
+  result_amount_typeffect -> cooldown_ = timespan_t::zero();
+  effect.player -> special_effects.push_back( result_amount_typeffect );
 
   // And create, initialized and deactivate the callback
-  dbc_proc_callback_t* callback = new darkstrikes_driver_t( *dmg_effect );
+  dbc_proc_callback_t* callback = new darkstrikes_driver_t( *result_amount_typeffect );
   callback -> initialize();
   callback -> deactivate();
 
-  effect.custom_buff = buff_creator_t( effect.player, "darkstrikes", effect.driver(), effect.item )
-    .chance( 1 ) // overrride RPPM
-    .activated( false )
-    .cd( timespan_t::zero() )
-    .stack_change_callback( [ callback ]( buff_t*, int old, int new_ )
+  effect.custom_buff = make_buff( effect.player, "darkstrikes", effect.driver(), effect.item )
+    ->set_chance( 1 ) // overrride RPPM
+    ->set_activated( false )
+    ->set_cooldown( timespan_t::zero() )
+    ->set_stack_change_callback( [ callback ]( buff_t*, int old, int new_ )
     {
       if ( old == 0 ) {
         assert( ! callback -> active );
@@ -3862,7 +3864,7 @@ struct poisoned_dreams_impact_t : public proc_spell_t
     icd = effect.player -> get_cooldown( "poisoned_dreams_icd" );
     icd -> duration = timespan_t::from_seconds( 1.0 );
   }
-  virtual bool ready() override
+  bool ready() override
   {
     if ( icd -> down() )
     {
@@ -3872,7 +3874,7 @@ struct poisoned_dreams_impact_t : public proc_spell_t
     return spell_t::ready();
   }
 
-  virtual void execute() override
+  void execute() override
   {    // TODO: Verify exact ICD from in game data. Currently based off spelldata ICD on the damage event.
        // Also fix hardcoding
     if ( icd -> up() )
@@ -3925,11 +3927,13 @@ struct poisoned_dreams_t : public buff_t
   special_effect_t* effect;
 
   poisoned_dreams_t( const actor_pair_t& p, const special_effect_t& source_effect ) :
-    buff_t( buff_creator_t( p, "poisoned_dreams", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item )
-                              .activated( false )
-                              .period( timespan_t::from_seconds( 2.0 ) ) ),
+    buff_t( p, "poisoned_dreams", source_effect.driver() -> effectN( 1 ).trigger(), source_effect.item ),
                               damage_spell( p.source -> find_action( "poisoned_dreams_damage" ) )
   {
+
+    set_activated( false );
+    set_period( timespan_t::from_seconds( 2.0 ) );
+
     effect = new special_effect_t( p.source );
     effect -> name_str = "poisoned_dreams_damage_driver";
     effect -> proc_chance_ = 1.0;
@@ -4007,9 +4011,9 @@ struct bough_of_corruption_constructor_t : public item_targetdata_initializer_t
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if( effect == 0 )
+    if( effect == nullptr )
     {
-      td -> debuff.poisoned_dreams = buff_creator_t( *td, "poisoned_dreams" );
+      td -> debuff.poisoned_dreams = make_buff( *td, "poisoned_dreams" );
     }
     else
     {
@@ -4250,7 +4254,7 @@ void item::entwined_elemental_foci( special_effect_t& effect )
       }
     }
 
-    void execute( action_t*, action_state_t* )
+    void execute( action_t*, action_state_t* ) override
     {
       // Foci prefers to proc inactive buffs over active ones.
       // Make a vector with only the inactive buffs.
@@ -4332,7 +4336,7 @@ void item::tiny_oozeling_in_a_jar( special_effect_t& effect )
     }
   };
 
-  buff_t* charges = buff_creator_t( effect.player, "congealing_goo", effect.player -> find_spell( 215126 ), effect.item );
+  buff_t* charges = make_buff( effect.player, "congealing_goo", effect.player -> find_spell( 215126 ), effect.item );
 
   special_effect_t* goo_effect = new special_effect_t( effect.item );
   goo_effect -> source = SPECIAL_EFFECT_SOURCE_ITEM;
@@ -4349,13 +4353,15 @@ void item::tiny_oozeling_in_a_jar( special_effect_t& effect )
     action_t* damage;
 
     fetid_regurgitation_buff_t( special_effect_t& effect, buff_t* cg ) :
-      buff_t( buff_creator_t( effect.player, "fetid_regurgitation", effect.driver(), effect.item )
-        .activated( false )
-        .tick_zero( true )
-        .tick_callback( [ this ] ( buff_t*, int, const timespan_t& ) {
-          damage -> schedule_execute();
-        } ) ), congealing_goo( cg )
+      buff_t( effect.player, "fetid_regurgitation", effect.driver(), effect.item ), congealing_goo( cg )
     {
+
+      set_activated( false );
+      set_tick_zero( true );
+      set_tick_callback( [ this ] ( buff_t*, int, const timespan_t& ) {
+        damage -> schedule_execute();
+      } );
+
       damage = effect.player -> find_action( "fetid_regurgitation" );
       if ( ! damage )
       {
@@ -4467,9 +4473,9 @@ struct figurehead_of_the_naglfar_constructor_t : public item_targetdata_initiali
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if ( effect == 0 )
+    if ( effect == nullptr )
     {
-      td -> debuff.taint_of_the_sea = buff_creator_t( *td, "taint_of_the_sea" );
+      td -> debuff.taint_of_the_sea = make_buff( *td, "taint_of_the_sea" );
     }
     else
     {
@@ -4489,9 +4495,9 @@ struct figurehead_of_the_naglfar_constructor_t : public item_targetdata_initiali
       callback -> initialize();
       callback -> deactivate();
 
-      td -> debuff.taint_of_the_sea = buff_creator_t( *td, "taint_of_the_sea", effect -> driver() )
-      .default_value( effect -> driver() -> effectN( 2 ).trigger() -> effectN( 2 ).average( effect -> item ) )
-      .stack_change_callback( [ callback ]( buff_t* b, int old, int new_ )
+      td -> debuff.taint_of_the_sea = make_buff( *td, "taint_of_the_sea", effect -> driver() )
+      ->set_default_value( effect -> driver() -> effectN( 2 ).trigger() -> effectN( 2 ).average( effect -> item ) )
+      ->set_stack_change_callback( [ callback ]( buff_t* b, int old, int new_ )
       {
         if ( old == 0 )
         {
@@ -4704,7 +4710,7 @@ struct kiljaedens_burning_wish_t : public proc_spell_t
     travel_speed = 10;
   }
 
-  virtual void init() override
+  void init() override
   {
     spell_t::init();
     // Through testing with Rune of Power, Incanter's Flow, Arcane Power,
@@ -4716,10 +4722,10 @@ struct kiljaedens_burning_wish_t : public proc_spell_t
 
 
   // This always crits.
-  virtual double composite_crit_chance() const override
+  double composite_crit_chance() const override
   { return 1.0; }
 
-  virtual bool verify_actor_level() const override
+  bool verify_actor_level() const override
   { return true; }
 };
 
@@ -4928,11 +4934,11 @@ void item::faulty_countermeasures( special_effect_t& effect )
   callback -> initialize();
   callback -> deactivate();
 
-  effect.custom_buff = buff_creator_t( effect.player, "sheathed_in_frost", effect.driver(), effect.item )
-    .cd( timespan_t::zero() )
-    .activated( false )
-    .chance( 1 )
-    .stack_change_callback( [ callback ]( buff_t*, int old, int new_ )
+  effect.custom_buff = make_buff( effect.player, "sheathed_in_frost", effect.driver(), effect.item )
+    ->set_cooldown( timespan_t::zero() )
+    ->set_activated( false )
+    ->set_chance( 1 )
+    ->set_stack_change_callback( [ callback ]( buff_t*, int old, int new_ )
     {
       if ( old == 0 ) {
         assert( ! callback -> active );
@@ -5121,7 +5127,7 @@ struct volatile_magic_debuff_t : public buff_t
   action_t* damage;
 
   volatile_magic_debuff_t( const special_effect_t& effect, actor_target_data_t& td ) :
-    buff_t( buff_creator_t( td, "volatile_magic", effect.trigger() ) ),
+    buff_t( td, "volatile_magic", effect.trigger() ),
     damage( effect.player -> find_action( "withering_consumption" ) )
   {}
 
@@ -5149,9 +5155,9 @@ struct portable_manacracker_constructor_t : public item_targetdata_initializer_t
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if ( effect == 0 )
+    if ( effect == nullptr )
     {
-      td -> debuff.volatile_magic = buff_creator_t( *td, "volatile_magic" );
+      td -> debuff.volatile_magic = make_buff( *td, "volatile_magic" );
     }
     else
     {
@@ -5212,9 +5218,9 @@ void item::infernal_alchemist_stone( special_effect_t& effect )
 void item::marfisis_giant_censer( special_effect_t& effect )
 {
   const spell_data_t* driver = effect.player -> find_spell( effect.spell_id );
-  effect.player -> buffs.incensed = buff_creator_t( effect.player, "incensed", driver -> effectN( 1 ).trigger() )
-    .default_value( driver -> effectN( 1 ).trigger() -> effectN( 1 ).average( effect.item ) / 100 )
-    .chance ( 1 );
+  effect.player -> buffs.incensed = make_buff( effect.player, "incensed", driver -> effectN( 1 ).trigger() )
+    ->set_default_value( driver -> effectN( 1 ).trigger() -> effectN( 1 ).average( effect.item ) / 100 )
+    ->set_chance ( 1 );
   effect.custom_buff = effect.player -> buffs.incensed;
 
   new dbc_proc_callback_t( effect.player, effect );
@@ -5241,10 +5247,10 @@ void item::leyspark( special_effect_t& effect )
   {
     stat_buff_t* sparking_;
     sparking_driver_t( const special_effect_t& effect, stat_buff_t* sparking ) :
-      buff_t( buff_creator_t( effect.player, "sparking_driver", effect.driver() -> effectN( 1 ).trigger() )
-              .tick_callback( [sparking]( buff_t*, int, const timespan_t& ) { sparking -> trigger( 1 ); } ) ),
+      buff_t( effect.player, "sparking_driver", effect.driver() -> effectN( 1 ).trigger() ),
       sparking_( sparking )
     {
+      set_tick_callback( [sparking]( buff_t*, int, const timespan_t& ) { sparking -> trigger( 1 ); } );
     }
 
     void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
@@ -5293,8 +5299,8 @@ void item::spontaneous_appendages( special_effect_t& effect )
   }
 
 
-  effect.custom_buff = buff_creator_t( effect.player, "horrific_appendages", effect.trigger(), effect.item )
-    .tick_callback( [ slam ]( buff_t*, int, const timespan_t& ) {
+  effect.custom_buff = make_buff( effect.player, "horrific_appendages", effect.trigger(), effect.item )
+    ->set_tick_callback( [ slam ]( buff_t*, int, const timespan_t& ) {
       slam -> schedule_execute();
     } );
 
@@ -5310,7 +5316,7 @@ struct wriggling_sinew_constructor_t : public item_targetdata_initializer_t
     action_t* action;
 
     maddening_whispers_debuff_t( const special_effect_t& effect, actor_target_data_t& td ) :
-      buff_t( buff_creator_t( td, "maddening_whispers", effect.trigger(), effect.item ) ),
+      buff_t( td, "maddening_whispers", effect.trigger(), effect.item ),
       action( effect.player -> find_action( "maddening_whispers" ) )
     {}
 
@@ -5321,7 +5327,7 @@ struct wriggling_sinew_constructor_t : public item_targetdata_initializer_t
       // Schedule an execute, but snapshot state right now so we can apply the stack multiplier.
       action_state_t* s   = action -> get_state();
       s -> target         = player;
-      action -> snapshot_state( s, DMG_DIRECT );
+      action -> snapshot_state( s, result_amount_type::DMG_DIRECT );
       s -> target_da_multiplier *= stacks;
       action -> schedule_execute( s );
     }
@@ -5334,9 +5340,9 @@ struct wriggling_sinew_constructor_t : public item_targetdata_initializer_t
   void operator()( actor_target_data_t* td ) const override
   {
     const special_effect_t* effect = find_effect( td -> source );
-    if ( effect == 0 )
+    if ( effect == nullptr )
     {
-      td -> debuff.maddening_whispers = buff_creator_t( *td, "maddening_whispers" );
+      td -> debuff.maddening_whispers = make_buff( *td, "maddening_whispers" );
     }
     else
     {
@@ -5375,8 +5381,9 @@ struct maddening_whispers_t : public buff_t
   dbc_proc_callback_t* callback;
 
   maddening_whispers_t( const special_effect_t& effect ) :
-    buff_t( buff_creator_t( effect.player, "maddening_whispers", effect.driver(), effect.item ).cd( timespan_t::zero() ) )
+    buff_t( effect.player, "maddening_whispers", effect.driver(), effect.item )
   {
+    set_cooldown( timespan_t::zero() );
     // Stack gain effect
     special_effect_t* effect2 = new special_effect_t( effect.item );
     effect2 -> source       = SPECIAL_EFFECT_SOURCE_ITEM;
@@ -5456,7 +5463,7 @@ static const convergence_cd_t convergence_cds[] =
   { WARRIOR_ARMS,         { "battle_cry" } },
   { WARRIOR_FURY,         { "recklessness" } },
   { DEMON_HUNTER_HAVOC,   { "metamorphosis" } },
-  { SPEC_NONE,            { 0 } }
+  { SPEC_NONE,            { nullptr } }
 };
 
 struct convergence_of_fates_callback_t : public dbc_proc_callback_t
@@ -5774,7 +5781,7 @@ struct cinidaria_the_symbiote_t : public class_scoped_callback_t
     // also resolved, and that state -> result_amount will hold the "final actual damage" of the
     // ability.
     effect.player -> assessor_out_damage.add( assessor::TARGET_DAMAGE + 1,
-      [ spell_blacklist, threshold, multiplier, spell ]( dmg_e, action_state_t* state )
+      [ spell_blacklist, threshold, multiplier, spell ](result_amount_type, action_state_t* state )
       {
         const auto source_action = state -> action;
         const auto target = state -> target;
@@ -5873,13 +5880,13 @@ void consumables::potion_of_the_old_war( special_effect_t& effect )
   proc -> initialize();
   proc -> deactivate();
 
-  effect.custom_buff = buff_creator_t( effect.player, effect.name(), effect.driver() )
-    .stack_change_callback( [ proc ]( buff_t*, int, int new_ ) {
+  effect.custom_buff = make_buff( effect.player, effect.name(), effect.driver() )
+    ->set_stack_change_callback( [ proc ]( buff_t*, int, int new_ ) {
       if ( new_ == 1 ) proc -> activate();
       else             proc -> deactivate();
     } )
-    .cd( timespan_t::zero() ) // Handled by the action
-    .chance( 1.0 ); // Override chance, the 20RPPM thing is in the secondary proc above
+    ->set_cooldown( timespan_t::zero() ) // Handled by the action
+    ->set_chance( 1.0 ); // Override chance, the 20RPPM thing is in the secondary proc above
 }
 
 // Potion of Deadly Grace ===================================================
@@ -5924,14 +5931,14 @@ void consumables::potion_of_deadly_grace( special_effect_t& effect )
     duration += timespan_t::from_seconds( 5 );
   }
 
-  effect.custom_buff = buff_creator_t( effect.player, effect.name(), effect.driver() )
-    .stack_change_callback( [ proc ]( buff_t*, int, int new_ ) {
+  effect.custom_buff = make_buff( effect.player, effect.name(), effect.driver() )
+    ->set_stack_change_callback( [ proc ]( buff_t*, int, int new_ ) {
       if ( new_ == 1 ) proc -> activate();
       else             proc -> deactivate();
     } )
-    .cd( timespan_t::zero() ) // Handled by the action
-    .duration( duration )
-    .chance( 1.0 ); // Override chance, the 20RPPM thing is in the secondary proc above
+    ->set_cooldown( timespan_t::zero() ) // Handled by the action
+    ->set_duration( duration )
+    ->set_chance( 1.0 ); // Override chance, the 20RPPM thing is in the secondary proc above
 }
 
 // Hearty Feast =============================================================
@@ -6004,9 +6011,9 @@ void consumables::darkmoon_faire_food( special_effect_t& effect )
     value *= 2.0;
   }
 
-  buff_t* dmf_well_fed = buff_creator_t( effect.player, "darkmoon_faire_food", effect.driver() )
-    .default_value( value )
-    .add_invalidate( CACHE_VERSATILITY );
+  buff_t* dmf_well_fed = make_buff( effect.player, "darkmoon_faire_food", effect.driver() )
+    ->set_default_value( value )
+    ->add_invalidate( CACHE_VERSATILITY );
 
   effect.custom_buff = dmf_well_fed;
   effect.player -> buffs.dmf_well_fed = dmf_well_fed;
@@ -6063,7 +6070,7 @@ struct pepper_breath_driver_t : public proc_spell_t
       tick_action = new pepper_breath_damage_t( effect, trigger_id );
     }
   }
-  virtual void init() override
+  void init() override
   {
     spell_t::init();
     snapshot_flags = update_flags = 0;
@@ -6310,12 +6317,12 @@ void item::sixfeather_fan( special_effect_t& effect )
     effect.trigger_spell_id = 0;
   }
 
-  effect.custom_buff = buff_creator_t( effect.player, "sixfeather_fan", effect.trigger(), effect.item )
-    .tick_callback( [ = ]( buff_t*, int, const timespan_t& ) {
+  effect.custom_buff = make_buff( effect.player, "sixfeather_fan", effect.trigger(), effect.item )
+    ->set_tick_callback( [ = ]( buff_t*, int, const timespan_t& ) {
       bolt -> schedule_execute();
     } )
-    .tick_zero( true )
-    .tick_behavior( buff_tick_behavior::CLIP ); // TOCHECK
+    ->set_tick_zero( true )
+    ->set_tick_behavior( buff_tick_behavior::CLIP ); // TOCHECK
 
   new wind_bolt_callback_t( effect.item, effect, bolt );
 }
@@ -6324,8 +6331,8 @@ void item::sixfeather_fan( special_effect_t& effect )
 
 void item::aggramars_stride( special_effect_t& effect )
 {
-  effect.custom_buff = buff_creator_t( effect.player, "aggramars_stride", effect.driver(), effect.item )
-    .default_value( effect.driver() -> effectN( 1 ).percent() );
+  effect.custom_buff = make_buff( effect.player, "aggramars_stride", effect.driver(), effect.item )
+    ->set_default_value( effect.driver() -> effectN( 1 ).percent() );
 
   effect.player -> buffs.aggramars_stride = effect.custom_buff;
 }
@@ -6385,13 +6392,13 @@ struct eyasus_driver_t : public spell_t
       ->add_stat( STAT_VERSATILITY_RATING, amount );
 
     // Initialize mulligan buffs
-    mulligan_buffs[ 0 ] = buff_creator_t( effect.player, "lethal_on_board_mulligan",
+    mulligan_buffs[ 0 ] = make_buff( effect.player, "lethal_on_board_mulligan",
       effect.player -> find_spell( 227389 ), effect.item );
-    mulligan_buffs[ 1 ] = buff_creator_t( effect.player, "the_coin_mulligan",
+    mulligan_buffs[ 1 ] = make_buff( effect.player, "the_coin_mulligan",
       effect.player -> find_spell( 227395 ), effect.item );
-    mulligan_buffs[ 2 ] = buff_creator_t( effect.player, "top_decking_mulligan",
+    mulligan_buffs[ 2 ] = make_buff( effect.player, "top_decking_mulligan",
       effect.player -> find_spell( 227396 ), effect.item );
-    mulligan_buffs[ 3 ] = buff_creator_t( effect.player, "full_hand_mulligan",
+    mulligan_buffs[ 3 ] = make_buff( effect.player, "full_hand_mulligan",
       effect.player -> find_spell( 227397 ), effect.item );
   }
 
@@ -6623,7 +6630,7 @@ void artifact_power::murderous_intent( special_effect_t& effect )
     return;
   }
 
-  concordance -> stats.push_back( stat_buff_t::buff_stat_t( STAT_VERSATILITY_RATING, value ) );
+  concordance -> stats.emplace_back( STAT_VERSATILITY_RATING, value );
 }
 
 // Shocklight ===========================================================
@@ -6640,7 +6647,7 @@ void artifact_power::shocklight( special_effect_t& effect )
     return;
   }
 
-  concordance -> stats.push_back( stat_buff_t::buff_stat_t( STAT_CRIT_RATING, value ) );
+  concordance -> stats.emplace_back( STAT_CRIT_RATING, value );
 }
 
 // Light Speed ==========================================================
@@ -6840,7 +6847,7 @@ void unique_gear::register_special_effects_legion()
   register_special_effect( 225606, consumables::pepper_breath );
   register_special_effect( 225601, consumables::pepper_breath );
   register_special_effect( 201336, consumables::pepper_breath );
-  register_special_effect( 185736, consumables::darkmoon_faire_food );
+  register_special_effect( 185786, consumables::darkmoon_faire_food );
 
   /* Artifact powers */
   register_special_effect( 252906, artifact_power::torment_the_weak );

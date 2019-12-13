@@ -7,7 +7,7 @@
 
 namespace
 {
-const int wowhead_min_item_level = 600;
+const int wowhead_min_item_level = 250;
 
 const char* wowhead_domain_name( bool ptr )
 {
@@ -94,7 +94,7 @@ std::array<std::string, SCALE_METRIC_MAX> gear_weights::wowhead(
     bool first = true;
 
     std::stringstream s;
-    s << "http://" << wowhead_domain_name( p.dbc.ptr ) << "/?items&amp;filter=";
+    s << "https://" << wowhead_domain_name( p.dbc.ptr ) << "/?items&amp;filter=";
     s << "ub=" << util::class_id( p.type ) << ";";
 
     // Restrict wowhead to rare gems. When epic gems become
@@ -198,7 +198,7 @@ std::array<std::string, SCALE_METRIC_MAX> gear_weights::pawn(
   {
     bool first    = true;
     std::string s = "( Pawn: v1: \"";
-    s += p.name();
+    s += util::encode_html( p.name() );
     s += "-";
     s += util::spec_string_no_class(p);
     s += "\": ";

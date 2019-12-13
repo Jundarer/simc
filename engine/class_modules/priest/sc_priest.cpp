@@ -54,9 +54,9 @@ template <class Base>
 struct divine_star_base_t : public Base
 {
 private:
-  typedef Base ab;  // the action base ("ab") type (priest_spell_t or priest_heal_t)
+  using ab = Base;  // the action base ("ab") type (priest_spell_t or priest_heal_t)
 public:
-  typedef divine_star_base_t base_t;
+  using base_t = divine_star_base_t<Base>;
 
   propagate_const<divine_star_base_t*> return_spell;
 
@@ -203,28 +203,8 @@ struct levitate_t final : public priest_spell_t
 };
 
 // ==========================================================================
-// Power Infusion
+// Power Word: Fortitude
 // ==========================================================================
-struct power_infusion_t final : public priest_spell_t
-{
-  power_infusion_t( priest_t& p, const std::string& options_str )
-    : priest_spell_t( "power_infusion", p, p.talents.power_infusion )
-  {
-    parse_options( options_str );
-    harmful = false;
-  }
-
-  void execute() override
-  {
-    priest_spell_t::execute();
-
-    priest().buffs.power_infusion->trigger();
-
-    sim->print_debug( "{} used Power Infusion with {} Insanity drain stacks.", priest().name(),
-                      priest().buffs.insanity_drain_stacks->value() );
-  }
-};
-
 struct power_word_fortitude_t final : public priest_spell_t
 {
   power_word_fortitude_t( priest_t& p, const std::string& options_str )
@@ -237,35 +217,12 @@ struct power_word_fortitude_t final : public priest_spell_t
     background = sim -> overrides.power_word_fortitude != 0;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     priest_spell_t::execute();
 
     if ( ! sim -> overrides.power_word_fortitude )
       sim -> auras.power_word_fortitude -> trigger();
-  }
-};
-
-
-// ==========================================================================
-// Blessed Dawnlight Medallion
-// ==========================================================================
-struct blessed_dawnlight_medallion_t : public priest_spell_t
-{
-  double insanity;
-
-  blessed_dawnlight_medallion_t( priest_t& p, const special_effect_t& )
-    : priest_spell_t( "blessing", p, p.find_spell( 227727 ) ), insanity( data().effectN( 1 ).percent() )
-  {
-    energize_amount = RESOURCE_NONE;
-    background      = true;
-  }
-
-  void execute() override
-  {
-    priest_spell_t::execute();
-    priest().generate_insanity( data().effectN( 1 ).percent(), priest().gains.insanity_blessing,
-                                execute_state->action );
   }
 };
 
@@ -363,7 +320,16 @@ public:
 
   void execute() override
   {
-    pet->summon( summoning_duration );
+    if ( pet->is_sleeping() )
+    {
+      pet->summon( summoning_duration );
+    }
+    else
+    {
+      auto new_duration = pet->expiration->remains();
+      new_duration += summoning_duration;
+      pet->expiration->reschedule( new_duration );
+    }
 
     priest_spell_t::execute();
   }
@@ -392,7 +358,7 @@ struct summon_shadowfiend_t final : public summon_pet_t
     summoning_duration = data().duration();
     cooldown           = p.cooldowns.shadowfiend;
     cooldown->duration = data().cooldown();
-    cooldown->duration += priest().sets->set( PRIEST_SHADOW, T18, B2 )->effectN( 1 ).time_value();
+    cooldown->duration *= 1.0 + azerite::vision_of_perfection_cdr( p.azerite_essence.vision_of_perfection );
   }
 };
 
@@ -409,7 +375,22 @@ struct summon_mindbender_t final : public summon_pet_t
     summoning_duration = data().duration();
     cooldown           = p.cooldowns.mindbender;
     cooldown->duration = data().cooldown();
-    cooldown->duration += priest().sets->set( PRIEST_SHADOW, T18, B2 )->effectN( 2 ).time_value();
+    cooldown->duration *= 1.0 + azerite::vision_of_perfection_cdr( p.azerite_essence.vision_of_perfection );
+  }
+};
+
+/**
+ * Discipline and shadow heal
+ */
+struct shadow_mend_t final : public priest_heal_t
+{
+  shadow_mend_t( priest_t& p, const std::string& options_str )
+    : priest_heal_t( "shadow_mend", p, p.find_class_spell( "Shadow Mend" ) )
+  {
+    parse_options( options_str );
+    harmful            = false;
+
+    // TODO: add harmful ticking effect 187464
   }
 };
 
@@ -470,120 +451,10 @@ void do_trinket_init( const priest_t* priest, specialization_e spec, const speci
   ptr = &( effect );
 }
 
-// Legion Legendaries
-
-// Shadow
-void anunds_seared_shackles( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.anunds_seared_shackles, effect );
-}
-
-void mangazas_madness( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.mangazas_madness, effect );
-
-  if ( priest->active_items.mangazas_madness && priest->level() < 116)
-  {
-    priest->cooldowns.mind_blast->charges +=
-      (int)(float) priest->active_items.mangazas_madness->driver()->effectN( 1 ).base_value();
-  }
-}
-
-void mother_shahrazs_seduction( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.mother_shahrazs_seduction, effect );
-}
-
-void the_twins_painful_touch( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.the_twins_painful_touch, effect );
-
-  if ( priest->active_items.the_twins_painful_touch )
-  {
-    // Activate buff proc chance
-    priest->buffs.the_twins_painful_touch->set_chance(
-        -1.0 );  // Reset chance to default value, so we get values from spell_data.
-    priest->buffs.the_twins_painful_touch->set_trigger_spell( priest->active_items.the_twins_painful_touch->driver() );
-  }
-}
-
-void zenkaram_iridis_anadem( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.zenkaram_iridis_anadem, effect );
-}
-
-void zeks_exterminatus( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.zeks_exterminatus, effect );
-}
-
-void heart_of_the_void( special_effect_t& effect )
-{
-  priest_t* priest = debug_cast<priest_t*>( effect.player );
-  assert( priest );
-  do_trinket_init( priest, PRIEST_SHADOW, priest->active_items.heart_of_the_void, effect );
-}
-
 using namespace unique_gear;
 
-struct sephuzs_secret_enabler_t : public scoped_actor_callback_t<priest_t>
-{
-  sephuzs_secret_enabler_t() : scoped_actor_callback_t( PRIEST )
-  {
-  }
-
-  void manipulate( priest_t* priest, const special_effect_t& e ) override
-  {
-    priest->legendary.sephuzs_secret = e.driver();
-  }
-};
-
-struct sephuzs_secret_t : public class_buff_cb_t<priest_t>
-{
-  sephuzs_secret_t() : super( PRIEST, "sephuzs_secret" )
-  {
-  }
-
-  buff_t*& buff_ptr( const special_effect_t& e ) override
-  {
-    return debug_cast<priest_t*>( e.player )->buffs.sephuzs_secret.get_ref();
-  }
-
-  buff_t* creator( const special_effect_t& e ) const override
-  {
-    auto buff = make_buff( e.player, buff_name, e.trigger() );
-    buff->set_cooldown( e.player->find_spell( 226262 )->duration() )
-        ->set_default_value( e.trigger()->effectN( 2 ).percent() )
-        ->add_invalidate( CACHE_RUN_SPEED )
-        ->add_invalidate( CACHE_HASTE );
-    return buff;
-  }
-};
 void init()
 {
-  // Legion Legendaries
-  unique_gear::register_special_effect( 215209, anunds_seared_shackles );
-  unique_gear::register_special_effect( 207701, mangazas_madness );
-  unique_gear::register_special_effect( 236523, mother_shahrazs_seduction );
-  unique_gear::register_special_effect( 207721, the_twins_painful_touch );
-  unique_gear::register_special_effect( 224999, zenkaram_iridis_anadem );
-  unique_gear::register_special_effect( 236545, zeks_exterminatus );
-  unique_gear::register_special_effect( 208051, sephuzs_secret_enabler_t() );
-  unique_gear::register_special_effect( 208051, sephuzs_secret_t(), true );
-  unique_gear::register_special_effect( 248296, heart_of_the_void );
-
   // Priest Leyshock's Grand Compendium basic hooks
 
   // Haste
@@ -689,9 +560,9 @@ priest_td_t::priest_td_t( player_t* target, priest_t& p ) : actor_target_data_t(
   dots.shadow_word_pain  = target->get_dot( "shadow_word_pain", &p );
   dots.vampiric_touch    = target->get_dot( "vampiric_touch", &p );
 
-  buffs.schism = buff_creator_t( *this, "schism", p.talents.schism );
+  buffs.schism = make_buff( *this, "schism", p.talents.schism );
 
-  target->callbacks_on_demise.push_back( [this]( player_t* ) { target_demise(); } );
+  target->callbacks_on_demise.emplace_back([this]( player_t* ) { target_demise(); } );
 }
 
 void priest_td_t::reset()
@@ -731,14 +602,16 @@ priest_t::priest_t( sim_t* sim, const std::string& name, race_e r )
     active_items(),
     pets(),
     options(),
-    insanity( *this )
+    azerite(),
+    azerite_essence(),
+    insanity(*this)
 {
   create_cooldowns();
   create_gains();
   create_procs();
   create_benefits();
 
-  regen_type = REGEN_DYNAMIC;
+  resource_regeneration = regen_type::DYNAMIC;
 }
 
 /** Construct priest cooldowns */
@@ -750,6 +623,7 @@ void priest_t::create_cooldowns()
   cooldowns.apotheosis         = get_cooldown("apotheosis ");
   cooldowns.holy_fire          = get_cooldown( "holy_fire" );
   cooldowns.holy_word_chastise = get_cooldown( "holy_word_chastise" );
+  cooldowns.holy_word_serenity = get_cooldown( "holy_word_serenity" );
   cooldowns.power_word_shield  = get_cooldown( "power_word_shield" );
   cooldowns.shadowfiend        = get_cooldown( "shadowfiend" );
   cooldowns.silence            = get_cooldown( "silence" );
@@ -757,7 +631,6 @@ void priest_t::create_cooldowns()
   cooldowns.void_bolt          = get_cooldown( "void_bolt" );
   cooldowns.mind_bomb          = get_cooldown( "mind_bomb" );
   cooldowns.psychic_horror     = get_cooldown( "psychic_horror" );
-  cooldowns.sephuzs_secret     = get_cooldown( "sephuzs_secret" );
   cooldowns.dark_ascension     = get_cooldown( "dark_ascension" );
 
   if ( specialization() == PRIEST_DISCIPLINE )
@@ -768,15 +641,6 @@ void priest_t::create_cooldowns()
   {
     cooldowns.power_word_shield->duration = timespan_t::from_seconds( 4.0 );
   }
-  talent_points.register_validity_fn( [this]( const spell_data_t* spell ) {
-    // Soul of the High Priest
-    if ( find_item( 151646 ) )
-    {
-      return spell->id() == 109142;  // Twist of Fate
-    }
-
-    return false;
-  } );
 }
 
 /** Construct priest gains */
@@ -791,7 +655,6 @@ void priest_t::create_gains()
   gains.insanity_mind_flay                     = get_gain( "Insanity Gained from Mind Flay" );
   gains.insanity_mind_sear                     = get_gain( "Insanity Gained from Mind Sear" );
   gains.insanity_pet                           = get_gain( "Insanity Gained from Shadowfiend" );
-  gains.insanity_power_infusion                = get_gain( "Insanity Gained from Power Infusion" );
   gains.insanity_shadow_crash                  = get_gain( "Insanity Gained from Shadow Crash" );
   gains.insanity_shadow_word_death             = get_gain( "Insanity Gained from Shadow Word: Death" );
   gains.insanity_shadow_word_pain_onhit        = get_gain( "Insanity Gained from Shadow Word: Pain Casts" );
@@ -801,11 +664,12 @@ void priest_t::create_gains()
   gains.insanity_vampiric_touch_ondamage       = get_gain( "Insanity Gained from Vampiric Touch Damage (T19 2P)" );
   gains.insanity_vampiric_touch_onhit          = get_gain( "Insanity Gained from Vampiric Touch Casts" );
   gains.insanity_void_bolt                     = get_gain( "Insanity Gained from Void Bolt" );
-  gains.insanity_void_torrent                  = get_gain( "Insanity Saved by Void Torrent" );
+  gains.insanity_void_torrent                  = get_gain( "Insanity Gained from Void Torrent" );
+  gains.insanity_dark_ascension                = get_gain( "Insanity Gained from Dark Ascension" );
   gains.vampiric_touch_health                  = get_gain( "Health from Vampiric Touch Ticks" );
-  gains.insanity_blessing                      = get_gain( "Insanity from Blessing Dawnlight Medallion" );
-  gains.insanity_call_to_the_void              = get_gain( "Insanity Gained from Call to the Void" );
   gains.insanity_dark_void                     = get_gain( "Insanity Gained from Dark Void" );
+  gains.insanity_lucid_dreams                  = get_gain( "Insanity Gained from Lucid Dreams" );
+  gains.insanity_memory_of_lucid_dreams        = get_gain( "Insanity Gained from Memory of Lucid Dreams" );
 }
 
 /** Construct priest procs */
@@ -821,16 +685,6 @@ void priest_t::create_procs()
   procs.serendipity_overflow            = get_proc( "Serendipity lost to overflow (Non-Tier 17 4pc)" );
   procs.power_of_the_dark_side          = get_proc( "Power of the Dark Side Penance damage buffed" );
   procs.power_of_the_dark_side_overflow = get_proc( "Power of the Dark Side lost to overflow" );
-
-  procs.legendary_anunds_last_breath =
-      get_proc( "Legendary - Anund's Seared Shackles - Void Bolt damage increases (3% per)" );
-  procs.legendary_anunds_last_breath_overflow =
-      get_proc( "Legendary - Anund's Seared Shackles - Void Bolt damage increases (3% per) lost to overflow" );
-
-  procs.legendary_zeks_exterminatus =
-      get_proc( "Legendary - Zek's Exterminatus - Shadow Word Death damage increases (25% per)" );
-  procs.legendary_zeks_exterminatus_overflow =
-      get_proc( "Legendary - Zek's Exterminatus - Shadow Word Death damage increases (100% per) lost to overflow" );
 }
 
 /** Construct priest benefits */
@@ -894,7 +748,7 @@ stat_e priest_t::convert_hybrid_stat( stat_e s ) const
   }
 }
 
-expr_t* priest_t::create_expression( const std::string& name_str )
+std::unique_ptr<expr_t> priest_t::create_expression( const std::string& name_str )
 {
   auto shadow_expression = create_expression_shadow( name_str );
   if ( shadow_expression )
@@ -905,24 +759,14 @@ expr_t* priest_t::create_expression( const std::string& name_str )
   return player_t::create_expression( name_str );
 }
 
-void priest_t::assess_damage( school_e school, dmg_e dtype, action_state_t* s )
+void priest_t::assess_damage( school_e school, result_amount_type dtype, action_state_t* s )
 {
-  if ( buffs.shadowform->check() )
-  {
-    s->result_amount *= 1.0 + buffs.shadowform->check() * buffs.shadowform->data().effectN( 2 ).percent();
-  }
-
   player_t::assess_damage( school, dtype, s );
 }
 
 double priest_t::composite_spell_haste() const
 {
   double h = player_t::composite_spell_haste();
-
-  if ( buffs.power_infusion->check() )
-  {
-    h /= 1.0 + buffs.power_infusion->data().effectN( 1 ).percent();
-  }
 
   if ( buffs.lingering_insanity->check() )
   {
@@ -934,29 +778,12 @@ double priest_t::composite_spell_haste() const
     h /= 1.0 + ( buffs.voidform->check() * find_spell( 228264 )->effectN( 2 ).percent() / 10.0 );
   }
 
-  if ( buffs.sephuzs_secret->check() )
-  {
-    h /= ( 1.0 + buffs.sephuzs_secret->check_stack_value() );
-  }
-
-  // 7.2 Sephuz's Secret passive haste. If the item is missing, default_chance will be set to 0 (by
-  // the fallback buff creator).
-  if ( legendary.sephuzs_secret->ok() )
-  {
-    h /= ( 1.0 + legendary.sephuzs_secret->effectN( 3 ).percent() );
-  }
-
   return h;
 }
 
 double priest_t::composite_melee_haste() const
 {
   double h = player_t::composite_melee_haste();
-
-  if ( buffs.power_infusion->check() )
-  {
-    h /= 1.0 + buffs.power_infusion->data().effectN( 1 ).percent();
-  }
 
   if ( buffs.lingering_insanity->check() )
   {
@@ -1101,10 +928,6 @@ action_t* priest_t::create_action( const std::string& name, const std::string& o
   {
     return new power_word_shield_t( *this, options_str );
   }
-  if ( name == "power_infusion" )
-  {
-    return new power_infusion_t( *this, options_str );
-  }
   if ( name == "power_word_fortitude" )
   {
     return new power_word_fortitude_t( *this, options_str );
@@ -1119,6 +942,10 @@ action_t* priest_t::create_action( const std::string& name, const std::string& o
     {
       return new summon_shadowfiend_t( *this, options_str );
     }
+  }
+  if ( name == "shadow_mend" )
+  {
+    return new shadow_mend_t( *this, options_str );
   }
 
   return base_t::create_action( name, options_str );
@@ -1157,6 +984,38 @@ void priest_t::create_pets()
   }
 }
 
+  void priest_t::trigger_lucid_dreams( double cost )
+{
+  if ( !azerite_essence.lucid_dreams )
+    return;
+
+  double multiplier  = azerite_essence.lucid_dreams->effectN( 1 ).percent();
+  double proc_chance = ( specialization() == PRIEST_SHADOW )
+                           ? options.priest_lucid_dreams_proc_chance_shadow
+                           : ( specialization() == PRIEST_HOLY ) ? options.priest_lucid_dreams_proc_chance_holy
+                                                                 : options.priest_lucid_dreams_proc_chance_disc;
+
+  if ( rng().roll( proc_chance ) )
+  {
+    double current_drain;
+    switch ( specialization() )
+    {
+      case PRIEST_SHADOW:
+        current_drain = insanity.insanity_drain_per_second();
+        generate_insanity( current_drain * multiplier, gains.insanity_lucid_dreams, nullptr );
+        break;
+      case PRIEST_HOLY:
+      case PRIEST_DISCIPLINE:
+        resource_gain( RESOURCE_MANA, multiplier * cost );
+        break;
+      default:
+        break;
+    }
+
+    player_t::buffs.lucid_dreams->trigger();
+  }
+}
+
 void priest_t::init_base_stats()
 {
   base_t::init_base_stats();
@@ -1176,8 +1035,6 @@ void priest_t::init_base_stats()
 void priest_t::init_resources( bool force )
 {
   base_t::init_resources( force );
-
-  resources.current[ RESOURCE_INSANITY ] = 0.0;
 }
 
 void priest_t::init_scaling()
@@ -1209,6 +1066,27 @@ void priest_t::init_spells()
   mastery_spells.grace          = find_mastery_spell( PRIEST_DISCIPLINE );
   mastery_spells.echo_of_light  = find_mastery_spell( PRIEST_HOLY );
   mastery_spells.madness        = find_mastery_spell( PRIEST_SHADOW );
+
+  auto memory_lucid_dreams = find_azerite_essence( "Memory of Lucid Dreams" );
+
+  // Rank 1: Major - Increased insanity generation rate for 10s, Minor - Chance to refund
+  // Rank 2: Major - Increased insanity generation rate for 12s, Minor - Chance to refund
+  // Rank 3: Major - Increased insanity generation rate for 12s, Minor - Chance to refund and Vers on Proc
+  if ( memory_lucid_dreams.enabled() )
+  {
+    azerite_essence.lucid_dreams           = memory_lucid_dreams.spell( 1u, essence_type::MINOR );
+    azerite_essence.memory_of_lucid_dreams = memory_lucid_dreams.spell( 1u, essence_type::MAJOR );
+  }
+
+  // Rank 1: Major - CD at 25% duration, Minor - CDR
+  // Rank 2: Major - CD at 35% duration, Minor - CDR
+  // Rank 3: Major - CD at 35% duration + Haste on Proc, Minor - Vers on Proc
+  azerite_essence.vision_of_perfection     = find_azerite_essence( "Vision of Perfection" );
+  azerite_essence.vision_of_perfection_r1  = azerite_essence.vision_of_perfection.spell( 1u, essence_type::MAJOR );
+  azerite_essence.vision_of_perfection_r2  =
+      azerite_essence.vision_of_perfection.spell( 2u, essence_spell::UPGRADE, essence_type::MAJOR );
+
+
 }
 
 void priest_t::create_buffs()
@@ -1216,10 +1094,6 @@ void priest_t::create_buffs()
   base_t::create_buffs();
 
   // Shared talent buffs
-
-  buffs.power_infusion = make_buff( this, "power_infusion", talents.power_infusion )
-                             ->add_invalidate( CACHE_SPELL_HASTE )
-                             ->add_invalidate( CACHE_HASTE );
   buffs.twist_of_fate = make_buff( this, "twist_of_fate", talents.twist_of_fate->effectN( 1 ).trigger() )
                             ->set_trigger_spell( talents.twist_of_fate )
                             ->add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER )
@@ -1236,6 +1110,51 @@ void priest_t::init_rng()
   init_rng_holy();
 
   player_t::init_rng();
+}
+
+void priest_t::vision_of_perfection_proc()
+{
+  if ( !azerite_essence.vision_of_perfection.is_major() || !azerite_essence.vision_of_perfection.enabled() )
+  {
+    return;
+  }
+
+  double vision_multiplier = azerite_essence.vision_of_perfection_r1 -> effectN( 1 ).percent() +
+                             azerite_essence.vision_of_perfection_r2 -> effectN( 1 ).percent();
+
+  if ( vision_multiplier <= 0 )
+    return;
+
+  timespan_t base_duration = timespan_t::zero();
+
+  if ( specialization() == PRIEST_SHADOW )
+  {
+    base_duration = talents.mindbender->ok() ?  find_talent_spell( "Mindbender" )->duration() :  find_class_spell( "Shadowfiend" )->duration();
+  }
+
+  if ( base_duration == timespan_t::zero() )
+  {
+    return;
+  }
+
+  timespan_t duration = vision_multiplier * base_duration;
+
+  if ( specialization() == PRIEST_SHADOW )
+  {
+    auto current_pet = talents.mindbender->ok() ?  pets.mindbender :  pets.shadowfiend;
+    // check if the pet is active or not
+    if ( current_pet->is_sleeping() )
+    {
+      current_pet->summon( duration );
+    }
+    else
+    {
+      // if the pet is currently active, just add to the existing duration
+      auto new_duration = current_pet->expiration->remains();
+      new_duration += duration;
+      current_pet->expiration->reschedule( new_duration );
+    }
+  }
 }
 
 /// ALL Spec Pre-Combat Action Priority List
@@ -1265,95 +1184,66 @@ void priest_t::create_apl_precombat()
       break;
     case PRIEST_SHADOW:
     default:
+      // Calculate these variables once to reduce sim time
+      precombat->add_action( "variable,name=mind_blast_targets,op=set,value="
+                             "floor((4.5+azerite.whispers_of_the_damned.rank)%(1+0.27*azerite.searing_dialogue.rank))" );
+      precombat->add_action( "variable,name=swp_trait_ranks_check,op=set,value="
+                             "(1-0.07*azerite.death_throes.rank+0.2*azerite.thought_harvester.rank)"
+                             "*(1-0.09*azerite.thought_harvester.rank*azerite.searing_dialogue.rank)" );
+      precombat->add_action( "variable,name=vt_trait_ranks_check,op=set,value="
+                             "(1-0.04*azerite.thought_harvester.rank-0.05*azerite.spiteful_apparitions.rank)" );
+      precombat->add_action( "variable,name=vt_mis_trait_ranks_check,op=set,value="
+                             "(1-0.07*azerite.death_throes.rank-0.03*azerite.thought_harvester.rank-0.055*azerite.spiteful_apparitions.rank)"
+                             "*(1-0.027*azerite.thought_harvester.rank*azerite.searing_dialogue.rank)" );
+      precombat->add_action( "variable,name=vt_mis_sd_check,op=set,value=1-0.014*azerite.searing_dialogue.rank" );
       precombat->add_action( this, "Shadowform", "if=!buff.shadowform.up" );
-      precombat->add_action( "mind_blast" );
-      precombat->add_action( "shadow_word_void" );
+      precombat->add_action( "use_item,name=azsharas_font_of_power" );
+      precombat->add_action( this, "Mind Blast", "if=spell_targets.mind_sear<2|azerite.thought_harvester.rank=0" );
+      precombat->add_action( this, "Vampiric Touch" );
       break;
   }
 }
 
 std::string priest_t::default_potion() const
 {
-  std::string lvl110_potion = "prolonged_power";
-
   std::string lvl120_potion =
-    ( specialization() == PRIEST_SHADOW ) ? "rising_death" :
+    ( specialization() == PRIEST_SHADOW ) ? "unbridled_fury" :
                                             "battle_potion_of_intellect";
 
-  return ( true_level > 110 )
-             ? lvl120_potion
-             : ( true_level >= 100 )
-                   ? lvl110_potion
-                   : ( true_level >= 90 )
-                         ? "draenic_intellect"
-                         : ( true_level >= 85 ) ? "jade_serpent" : ( true_level >= 80 ) ? "volcanic" : "disabled";
+  return ( true_level >  110 ) ? lvl120_potion :
+         ( true_level >= 100 ) ? "prolonged_power" :
+         ( true_level >=  90 ) ? "draenic_intellect" :
+         ( true_level >=  85 ) ? "jade_serpent" :
+         ( true_level >=  80 ) ? "volcanic" :
+                                 "disabled";
 }
 
 std::string priest_t::default_flask() const
 {
-  return ( true_level > 110 )
-             ? "endless_fathoms"
-             : ( true_level >= 100 )
-                   ? "whispered_pact"
-                   : ( true_level >= 90 )
-                         ? "greater_draenic_intellect_flask"
-                         : ( true_level >= 85 ) ? "warm_sun" : ( true_level >= 80 ) ? "draconic_mind" : "disabled";
+  return ( true_level >  110 ) ? "greater_flask_of_endless_fathoms" :
+         ( true_level >= 100 ) ? "whispered_pact" :
+         ( true_level >=  90 ) ? "greater_draenic_intellect_flask" :
+         ( true_level >=  85 ) ? "warm_sun" :
+         ( true_level >=  80 ) ? "draconic_mind" :
+                                 "disabled";
 }
 
 std::string priest_t::default_food() const
 {
-  std::string lvl100_food = "buttered_sturgeon";
-
-  return ( true_level > 110 )
-             ? "bountiful_captains_feast"
-             : ( true_level > 100 )
-                   ? "azshari_salad"
-                   : ( true_level > 90 )
-                         ? lvl100_food
-                         : ( true_level >= 90 ) ? "mogu_fish_stew"
-                                                : ( true_level >= 80 ) ? "seafood_magnifique_feast" : "disabled";
+  return ( true_level > 110 ) ? "baked_port_tato" :
+         ( true_level > 100 ) ? "azshari_salad" :
+         ( true_level >  90 ) ? "buttered_sturgeon" :
+         ( true_level >= 90 ) ? "mogu_fish_stew" :
+         ( true_level >= 80 ) ? "seafood_magnifique_feast" :
+                                "disabled";
 }
 
 std::string priest_t::default_rune() const
 {
-  return ( true_level >= 120 ) ? "battle_scarred" : ( true_level >= 110 ) ? "defiled" : ( true_level >= 100 ) ? "focus" : "disabled";
-}
-
-void priest_t::trigger_sephuzs_secret( const action_state_t* state, spell_mechanic mechanic, double proc_chance )
-{
-  // Skip the attempt to trigger sephuz if it is suppressed
-  if ( options.priest_suppress_sephuz )
-  {
-    return;
-  }
-
-  if ( level() < 116 )
-  {
-    switch ( mechanic )
-    {
-        // Interrupts will always trigger sephuz
-      case MECHANIC_INTERRUPT:
-        break;
-      default:
-        // By default, proc sephuz on persistent enemies if they are below the "boss level"
-        // (playerlevel + 3), and on any kind of transient adds.
-        if ( state->target->type != ENEMY_ADD && ( state->target->level() >= sim->max_player_level + 3 ) )
-        {
-          return;
-        }
-        break;
-    }
-
-    // Ensure Sephuz's Secret can even be procced. If the ring is not equipped, a fallback buff with
-    // proc chance of 0 (disabled) will be created
-    if ( buffs.sephuzs_secret->default_chance == 0 )
-    {
-      return;
-    }
-
-    buffs.sephuzs_secret->trigger( 1, buff_t::DEFAULT_VALUE(), proc_chance );
-    cooldowns.sephuzs_secret->start();
-  }
+  return ( true_level >= 120 ) ? "battle_scarred" :
+         ( true_level >= 110 ) ? "defiled" :
+         ( true_level >= 100 ) ? "focus" :
+                                 "disabled";
 }
 
 /** NO Spec Combat Action Priority List */
@@ -1487,7 +1377,7 @@ void priest_t::pre_analyze_hook()
   }
 }
 
-void priest_t::target_mitigation( school_e school, dmg_e dt, action_state_t* s )
+void priest_t::target_mitigation( school_e school, result_amount_type dt, action_state_t* s )
 {
   base_t::target_mitigation( school, dt, s );
 
@@ -1497,13 +1387,8 @@ void priest_t::target_mitigation( school_e school, dmg_e dt, action_state_t* s )
   }
 }
 
-action_t* priest_t::create_proc_action( const std::string& /*name*/, const special_effect_t& effect )
+action_t* priest_t::create_proc_action( const std::string& /*name*/, const special_effect_t& /*effect*/ )
 {
-  if ( effect.driver()->id() == 222275 )
-  {
-    return new actions::spells::blessed_dawnlight_medallion_t( *this, effect );
-  }
-
   return nullptr;
 }
 
@@ -1515,8 +1400,10 @@ void priest_t::create_options()
   add_option( opt_bool( "autounshift", options.autoUnshift ) );
   add_option( opt_bool( "priest_fixed_time", options.priest_fixed_time ) );
   add_option( opt_bool( "priest_ignore_healing", options.priest_ignore_healing ) );
-  add_option( opt_bool( "priest_suppress_sephuz", options.priest_suppress_sephuz ) );
   add_option( opt_int( "priest_set_voidform_duration", options.priest_set_voidform_duration ) );
+  add_option( opt_float( "priest_lucid_dreams_proc_chance_disc", options.priest_lucid_dreams_proc_chance_disc ) );
+  add_option( opt_float( "priest_lucid_dreams_proc_chance_holy", options.priest_lucid_dreams_proc_chance_holy ) );
+  add_option( opt_float( "priest_lucid_dreams_proc_chance_shadow", options.priest_lucid_dreams_proc_chance_shadow ) );
 }
 
 std::string priest_t::create_profile( save_e type )
@@ -1546,6 +1433,13 @@ void priest_t::copy_from( player_t* source )
   priest_t* source_p = debug_cast<priest_t*>( source );
 
   options = source_p->options;
+}
+
+void priest_t::arise()
+{
+  base_t::arise();
+
+  buffs.whispers_of_the_damned->trigger();
 }
 
 }  // namespace priestspace

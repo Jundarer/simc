@@ -258,6 +258,7 @@ void enchant::initialize_item_enchant( item_t& item,
   {
     special_effect_t effect( &item );
     effect.source = source;
+    effect.enchant_data = &( enchant );
     switch ( enchant.ench_type[ i ] )
     {
       // "Chance on Hit", we need to help simc a bit with proc flags
@@ -346,6 +347,12 @@ bool enchant::passive_enchant( item_t& item, unsigned spell_id )
   if ( ! spell -> ok() )
     return ret;
 
+  // Don't support ilevel-based calculations
+  if ( spell->flags( spell_attribute::SX_SCALE_ILEVEL ) )
+  {
+    return ret;
+  }
+
   if ( ! spell -> flags( spell_attribute::SX_PASSIVE ) &&
        spell -> duration() >= timespan_t::zero() )
     return ret;
@@ -382,7 +389,7 @@ bool enchant::passive_enchant( item_t& item, unsigned spell_id )
 
     if ( stat != STAT_NONE && value != 0 )
     {
-      item.parsed.enchant_stats.push_back( stat_pair_t( stat, (int)value ) );
+      item.parsed.enchant_stats.emplace_back( stat, (int)value );
       ret = true;
     }
   }
@@ -550,7 +557,7 @@ item_socket_color enchant::initialize_relic( item_t&                    item,
   util::tokenize( relic.name_str );
 
   // Apply evil relic data as relic bonus ids, so we can scale the relic ilevel correctly
-  range::for_each( item.parsed.relic_data[ relic_idx ], [ &relic ]( unsigned id ) {
+  range::for_each( item.parsed.gem_bonus_id[ relic_idx ], [ &relic ]( unsigned id ) {
     relic.parsed.bonus_id.push_back( as<int>( id ) );
   } );
 
@@ -587,9 +594,9 @@ item_socket_color enchant::initialize_relic( item_t&                    item,
 
   // The relic ilevel (after applying item bonuses) is stored in the parsed base item data.
   // User has overriden relic item level with the relic_ilevel option on the item.
-  if ( item.parsed.relic_ilevel[ relic_idx ] > 0 )
+  if ( item.parsed.gem_ilevel[ relic_idx ] > 0 )
   {
-    relic.parsed.data.level = item.parsed.relic_ilevel[ relic_idx ];
+    relic.parsed.data.level = item.parsed.gem_ilevel[ relic_idx ];
   }
 
   // Then, use a (seemingly) hard-coded curve point to figure out a scaled value for the +item level
@@ -599,7 +606,7 @@ item_socket_color enchant::initialize_relic( item_t&                    item,
 
   item.player -> sim -> print_debug("relic: {} ilevel_increase=+{}", relic, util::floor( ilevel_value ));
 
-  item.parsed.relic_bonus_ilevel[ relic_idx ] = as<unsigned>(util::floor( ilevel_value ));
+  item.parsed.gem_actual_ilevel[ relic_idx ] = as<unsigned>(util::floor( ilevel_value ));
 
   // 2018-06-20: Blizzard has added the relic ilevel increases as bonus ids to the actual weapon in
   // BfA

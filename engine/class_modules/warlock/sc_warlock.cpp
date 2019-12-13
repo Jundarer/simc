@@ -9,6 +9,7 @@ namespace warlock
   {
     struct drain_life_t : public warlock_spell_t
     {
+
       drain_life_t( warlock_t* p, const std::string& options_str ) :
         warlock_spell_t( p, "Drain Life" )
       {
@@ -18,21 +19,39 @@ namespace warlock
         may_crit = false;
       }
 
+      void execute() override
+      {
+
+        if (p()->azerite.inevitable_demise.ok() && p()->buffs.inevitable_demise->check() > 0)
+        {
+          if (p()->buffs.drain_life->check())
+            p()->buffs.inevitable_demise->expire();
+        }
+
+        warlock_spell_t::execute();
+
+        p()->buffs.drain_life->trigger();
+      }
+
       double bonus_ta(const action_state_t* s) const override
       {
         double ta = warlock_spell_t::bonus_ta(s);
+
         ta += p()->buffs.inevitable_demise->check_stack_value();
+
         return ta;
       }
 
       void last_tick( dot_t* d ) override
       {
+        p()->buffs.drain_life->expire();
         p()->buffs.inevitable_demise->expire();
 
         warlock_spell_t::last_tick( d );
       }
     };
 
+    //TOCHECK: Does the damage proc affect Seed of Corruption? If so, this needs to be split into specs as well
     struct grimoire_of_sacrifice_t : public warlock_spell_t
     {
       grimoire_of_sacrifice_t( warlock_t* p, const std::string& options_str ) :
@@ -74,22 +93,6 @@ namespace warlock
     };
   } // end actions namespace
 
-  namespace buffs
-  {
-    struct debuff_havoc_t : public warlock_buff_t<buff_t>
-    {
-      debuff_havoc_t( warlock_td_t& p ) :
-        base_t( p, "havoc", p.source -> find_spell( 80240 ) ) { }
-
-      void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
-      {
-        base_t::expire_override( expiration_stacks, remaining_duration );
-
-        p()->havoc_target = nullptr;
-      }
-    };
-  }
-
   warlock_td_t::warlock_td_t( player_t* target, warlock_t& p ) :
     actor_target_data_t( target, &p ),
     soc_threshold( 0.0 ),
@@ -114,7 +117,6 @@ namespace warlock
     debuffs_shadow_embrace = make_buff( *this, "shadow_embrace", source->find_spell( 32390 ) )
       ->set_refresh_behavior( buff_refresh_behavior::DURATION )
       ->set_max_stack( 3 );
-    debuffs_tormented_agony = make_buff(*this, "tormented_agony", source->find_spell(252938));
 
     //Destro
     dots_immolate = target->get_dot("immolate", &p);
@@ -126,7 +128,16 @@ namespace warlock
     debuffs_roaring_blaze = make_buff( *this, "roaring_blaze", source->find_spell( 205690 ) )
       ->set_max_stack( 100 );
     debuffs_shadowburn = make_buff(*this, "shadowburn", source->find_spell(17877));
-    debuffs_havoc = new buffs::debuff_havoc_t(*this);
+    debuffs_havoc = make_buff( *this, "havoc", source->find_spell( 80240 ) )
+      ->set_stack_change_callback( [ &p ] ( buff_t* b, int, int cur )
+      {
+        if ( cur == 0 )
+          p.havoc_target = nullptr;
+        else
+          p.havoc_target = b->player;
+
+        range::for_each( p.havoc_spells, [] ( action_t* a ) { a->target_cache.is_valid = false; } );
+      } );
     debuffs_chaotic_flames = make_buff(*this, "chaotic_flames", source->find_spell(253092));
 
     //Demo
@@ -136,7 +147,7 @@ namespace warlock
     debuffs_jaws_of_shadow = make_buff( *this, "jaws_of_shadow", source->find_spell( 242922 ) );
     debuffs_from_the_shadows = make_buff(*this, "from_the_shadows", source->find_spell(270569));
 
-    target->callbacks_on_demise.push_back( [this]( player_t* ) { target_demise(); } );
+    target->callbacks_on_demise.emplace_back([this]( player_t* ) { target_demise(); } );
   }
 
   void warlock_td_t::target_demise()
@@ -161,9 +172,11 @@ namespace warlock
         }
       }
 
-      if (dots_drain_soul->is_ticking())
+      if ( dots_drain_soul->is_ticking() )
       {
-        warlock.resource_gain(RESOURCE_SOUL_SHARD, 1, warlock.gains.drain_soul);
+        warlock.sim->print_log( "Player {} demised. Warlock {} gains a shard from drain soul.", target->name(), warlock.name() );
+
+        warlock.resource_gain( RESOURCE_SOUL_SHARD, 1, warlock.gains.drain_soul );
       }
     }
 
@@ -174,19 +187,77 @@ namespace warlock
       warlock.cooldowns.haunt->reset( true );
     }
 
-    if (debuffs_shadowburn->check())
+    if ( debuffs_shadowburn->check() )
     {
-      warlock.sim->print_log("Player {} demised. Warlock {} reset haunt's cooldown.", target->name(), warlock.name());
+      warlock.sim->print_log( "Player {} demised. Warlock {} reset shadowburn's cooldown.", target->name(), warlock.name() );
 
-      warlock.cooldowns.shadowburn->reset(true);
+      warlock.cooldowns.shadowburn->reset( true );
+    }
+  }
+
+  static void accumulate_seed_of_corruption(warlock_td_t* td, double amount)
+  {
+    td->soc_threshold -= amount;
+
+    if (td->soc_threshold <= 0)
+    {
+      td->dots_seed_of_corruption->cancel();
+    }
+    else
+    {
+      if( td->source->sim->log )
+        td->source->sim->out_log.printf("remaining damage to explode seed %f", td->soc_threshold);
+    }
+  }
+
+  void warlock_t::trigger_memory_of_lucid_dreams( double cost )
+  {
+    if ( !azerite_essence.memory_of_lucid_dreams.enabled() )
+    {
+      return;
+    }
+
+    if ( cost <= 0 )
+    {
+      return;
+    }
+
+    if ( specialization() == SPEC_NONE )
+    {
+      return;
+    }
+
+    //Harcoded 15% proc chance.
+    if ( !rng().roll( 0.15 ) )
+    {
+      return;
+    }
+
+    memory_of_lucid_dreams_accumulator += cost * spells.memory_of_lucid_dreams_base->effectN( 1 ).percent();
+
+    double shards_to_give = floor( memory_of_lucid_dreams_accumulator );
+
+    if ( shards_to_give > 0 )
+    {
+      resource_gain( RESOURCE_SOUL_SHARD, shards_to_give, gains.memory_of_lucid_dreams );
+      memory_of_lucid_dreams_accumulator -= shards_to_give;
+
+      if ( azerite_essence.memory_of_lucid_dreams.rank() >= 3 )
+      {
+        player_t::buffs.lucid_dreams->trigger();
+      }
     }
   }
 
 warlock_t::warlock_t( sim_t* sim, const std::string& name, race_e r ):
   player_t( sim, WARLOCK, name, r ),
     havoc_target( nullptr ),
+    havoc_spells(),
     wracking_brilliance(false),
     agony_accumulator( 0.0 ),
+    memory_of_lucid_dreams_accumulator( 0.0 ),
+    strive_for_perfection_multiplier(),
+    vision_of_perfection_multiplier(),
     active_pets( 0 ),
     warlock_pet_list( this ),
     active(),
@@ -199,7 +270,6 @@ warlock_t::warlock_t( sim_t* sim, const std::string& name, race_e r ):
     procs(),
     spells(),
     initial_soul_shards( 3 ),
-    allow_sephuz( false ),
     default_pet()
   {
     cooldowns.haunt = get_cooldown( "haunt" );
@@ -211,9 +281,11 @@ warlock_t::warlock_t( sim_t* sim, const std::string& name, race_e r ):
     cooldowns.darkglare = get_cooldown("summon_darkglare");
     cooldowns.demonic_tyrant = get_cooldown( "summon_demonic_tyrant" );
 
-    regen_type = REGEN_DYNAMIC;
+    resource_regeneration = regen_type::DYNAMIC;
     regen_caches[CACHE_HASTE] = true;
     regen_caches[CACHE_SPELL_HASTE] = true;
+
+    flashpoint_threshold = 0.8;
   }
 
 void warlock_t::invalidate_cache( cache_e c )
@@ -301,20 +373,11 @@ double warlock_t::composite_spell_haste() const
 {
   double h = player_t::composite_spell_haste();
 
-  if ( buffs.demonic_speed->check() )
-    h *= 1.0 / ( 1.0 + buffs.demonic_speed->check_value() );
-
   if (buffs.dark_soul_misery->check())
     h *= 1.0 / (1.0 + buffs.dark_soul_misery->check_value());
 
   if (buffs.reverse_entropy->check())
     h *= 1.0 / (1.0 + buffs.reverse_entropy->check_value());
-
-  if (specialization() == WARLOCK_DEMONOLOGY)
-  {
-    if (buffs.dreaded_haste->check())
-      h *= 1.0 / (1.0 + buffs.dreaded_haste->check_value());
-  }
 
   return h;
 }
@@ -323,17 +386,8 @@ double warlock_t::composite_melee_haste() const
 {
   double h = player_t::composite_melee_haste();
 
-  if ( buffs.demonic_speed->check() )
-    h *= 1.0 / ( 1.0 + buffs.demonic_speed->check_value() );
-
   if (buffs.reverse_entropy->check())
     h *= 1.0 / (1.0 + buffs.reverse_entropy->check_value());
-
-  if (specialization() == WARLOCK_DEMONOLOGY)
-  {
-    if (buffs.dreaded_haste->check())
-      h *= 1.0 / (1.0 + buffs.dreaded_haste->check_value());
-  }
 
   return h;
 }
@@ -364,6 +418,9 @@ double warlock_t::resource_gain( resource_e resource_type, double amount, gain_t
 {
   if ( resource_type == RESOURCE_SOUL_SHARD )
   {
+    if ( player_t::buffs.memory_of_lucid_dreams->up() )
+      amount *= 1.0 + player_t::buffs.memory_of_lucid_dreams->data().effectN( 1 ).percent();
+
     int current_soul_shards = (int)resources.current[ resource_type ];
     if ( current_soul_shards % 2 == 0 )
     {
@@ -372,6 +429,17 @@ double warlock_t::resource_gain( resource_e resource_type, double amount, gain_t
     else
     {
       expansion::bfa::trigger_leyshocks_grand_compilation( STAT_VERSATILITY_RATING, this );
+    }
+
+    // Chaos Shards triggers for all specializations
+    if ( azerite.chaos_shards.ok() )
+    {
+      // Check if soul shard was filled
+      if ( std::floor( resources.current[ RESOURCE_SOUL_SHARD ] ) < std::floor( std::min( resources.current[ RESOURCE_SOUL_SHARD ] + amount, 5.0 ) ) )
+      {
+        if ( rng().roll( azerite.chaos_shards.spell_ref().effectN( 1 ).percent() / 10.0 ) )
+          buffs.chaos_shards->trigger();
+      }
     }
   }
 
@@ -500,11 +568,8 @@ void warlock_t::init_spells()
   spec.wild_imps                        = find_specialization_spell( "Wild Imps" );
   spec.demonic_core                     = find_specialization_spell( "Demonic Core" );
   spec.shadow_bite                      = find_specialization_spell( "Shadow Bite" );
-  spec.shadow_bite_2                    = find_specialization_spell( 231799 );
   spec.unending_resolve                 = find_specialization_spell( "Unending Resolve" );
-  spec.unending_resolve_2               = find_specialization_spell( 231794 );
   spec.firebolt                         = find_specialization_spell( "Firebolt" );
-  spec.firebolt_2                       = find_specialization_spell( 231795 );
 
   // Talents
   talents.demon_skin                    = find_talent_spell( "Fire and Brimstone" );
@@ -516,6 +581,16 @@ void warlock_t::init_spells()
   talents.grimoire_of_sacrifice         = find_talent_spell( "Grimoire of Sacrifice" ); // aff and destro
   active.grimoire_of_sacrifice_proc     = new actions::grimoire_of_sacrifice_damage_t( this ); // grimoire of sacrifice
   talents.soul_conduit                  = find_talent_spell( "Soul Conduit" );
+
+  // Azerite Essences
+  azerite_essence.memory_of_lucid_dreams = find_azerite_essence( "Memory of Lucid Dreams" );
+  spells.memory_of_lucid_dreams_base = azerite_essence.memory_of_lucid_dreams.spell( 1u, essence_type::MINOR );
+  
+  azerite_essence.vision_of_perfection = find_azerite_essence( "Vision of Perfection" );
+  strive_for_perfection_multiplier = 1.0 + azerite::vision_of_perfection_cdr( azerite_essence.vision_of_perfection );
+  vision_of_perfection_multiplier = 
+    azerite_essence.vision_of_perfection.spell( 1u, essence_type::MAJOR )->effectN( 1 ).percent() +
+    azerite_essence.vision_of_perfection.spell( 2u, essence_spell::UPGRADE, essence_type::MAJOR )->effectN( 1 ).percent();
 }
 
 void warlock_t::init_rng()
@@ -547,7 +622,8 @@ void warlock_t::init_gains()
   gains.shadow_bolt                     = get_gain( "shadow_bolt" );
   gains.soul_conduit                    = get_gain( "soul_conduit" );
 
-  gains.soulsnatcher                    = get_gain( "soulsnatcher" );
+  gains.chaos_shards                    = get_gain( "chaos_shards" );
+  gains.memory_of_lucid_dreams          = get_gain( "memory_of_lucid_dreams" );
 }
 
 void warlock_t::init_procs()
@@ -567,7 +643,6 @@ void warlock_t::init_procs()
   procs.portal_summon                   = get_proc( "portal_summon" );
   procs.demonic_calling                 = get_proc( "demonic_calling" );
   procs.soul_conduit                    = get_proc( "soul_conduit" );
-  procs.demonology_t20_2pc              = get_proc( "demonology_t20_2pc" );
 }
 
 void warlock_t::init_base_stats()
@@ -588,7 +663,7 @@ void warlock_t::init_base_stats()
   if ( default_pet.empty() )
   {
     if ( specialization() == WARLOCK_AFFLICTION )
-      default_pet = "felhunter";
+      default_pet = "imp";
     else if ( specialization() == WARLOCK_DEMONOLOGY )
       default_pet = "felguard";
     else if ( specialization() == WARLOCK_DESTRUCTION )
@@ -599,6 +674,28 @@ void warlock_t::init_base_stats()
 void warlock_t::init_scaling()
 {
   player_t::init_scaling();
+}
+
+void warlock_t::init_assessors()
+{
+  player_t::init_assessors();
+
+  auto assessor_fn = [ this ] ( result_amount_type, action_state_t* s )
+  {
+    if ( get_target_data(s->target)->dots_seed_of_corruption->is_ticking() )
+    {
+      accumulate_seed_of_corruption(get_target_data(s->target),s->result_total);
+    }
+
+    return assessor::CONTINUE;
+  };
+
+  assessor_out_damage.add( assessor::TARGET_DAMAGE - 1, assessor_fn );
+
+  for ( auto pet : pet_list )
+  {
+    pet->assessor_out_damage.add( assessor::TARGET_DAMAGE - 1, assessor_fn );
+  }
 }
 
 void warlock_t::apl_precombat()
@@ -629,17 +726,24 @@ void warlock_t::apl_precombat()
   }
   if ( specialization() == WARLOCK_AFFLICTION )
   {
-    precombat->add_action( "seed_of_corruption,if=spell_targets.seed_of_corruption_aoe>=3" );
+    precombat->add_action( "use_item,name=azsharas_font_of_power" );
+    precombat->add_action( "seed_of_corruption,if=spell_targets.seed_of_corruption_aoe>=3&!equipped.169314" );
     precombat->add_action( "haunt" );
-    precombat->add_action( "shadow_bolt,if=!talent.haunt.enabled&spell_targets.seed_of_corruption_aoe<3" );
+    precombat->add_action( "shadow_bolt,if=!talent.haunt.enabled&spell_targets.seed_of_corruption_aoe<3&!equipped.169314" );
   }
 }
 
 std::string warlock_t::default_potion() const
 {
+  std::string lvl120_potion = 
+    ( specialization() == WARLOCK_DESTRUCTION ) ? "unbridled_fury" :
+    ( specialization() == WARLOCK_DEMONOLOGY ) ?  "unbridled_fury" :
+    ( specialization() == WARLOCK_AFFLICTION ) ?  "unbridled_fury" :
+                                                  "unbridled_fury";
+
   std::string lvl110_potion = "prolonged_power";
 
-  return ( true_level >  110 ) ? "battle_potion_of_intellect" :
+  return ( true_level >  110 ) ? lvl120_potion :
          ( true_level >= 100 ) ? lvl110_potion :
          ( true_level >=  90 ) ? "draenic_intellect" :
          ( true_level >=  85 ) ? "jade_serpent" :
@@ -649,7 +753,7 @@ std::string warlock_t::default_potion() const
 
 std::string warlock_t::default_flask() const
 {
-  return ( true_level >  110 ) ? "endless_fathoms" :
+  return ( true_level >  110 ) ? "greater_flask_of_endless_fathoms" :
          ( true_level >= 100 ) ? "whispered_pact" :
          ( true_level >=  90 ) ? "greater_draenic_intellect_flask" :
          ( true_level >=  85 ) ? "warm_sun" :
@@ -669,7 +773,7 @@ std::string warlock_t::default_food() const
     (specialization() == WARLOCK_AFFLICTION) ?    "nightborne_delicacy_platter" :
                                                   "azshari_salad";
 
-  return ( true_level > 110 ) ? "bountiful_captains_feast" :
+  return ( true_level > 110 ) ? "baked_port_tato" :
          ( true_level > 100 ) ? lvl110_food :
          ( true_level >  90 ) ? lvl100_food :
                                 "disabled";
@@ -746,6 +850,8 @@ void warlock_t::reset()
   warlock_pet_list.active = nullptr;
   havoc_target = nullptr;
   agony_accumulator = rng().range( 0.0, 0.99 );
+  memory_of_lucid_dreams_accumulator = 0.0;
+  wild_imp_spawns.clear();
 }
 
 void warlock_t::create_options()
@@ -754,7 +860,94 @@ void warlock_t::create_options()
 
   add_option( opt_int( "soul_shards", initial_soul_shards ) );
   add_option( opt_string( "default_pet", default_pet ) );
-  add_option( opt_bool( "allow_sephuz", allow_sephuz ) );
+  add_option( opt_float( "flashpoint_threshold", flashpoint_threshold, 0.0, 1.0) );
+}
+
+//Used to determine how many Wild Imps are waiting to be spawned from Hand of Guldan
+int warlock_t::get_spawning_imp_count()
+{
+  return as<int>(wild_imp_spawns.size());
+}
+
+//Function for returning the time until a certain number of imps will have spawned
+//In the case where count is equal to or greater than number of incoming imps, time to last imp is returned
+//Otherwise, time to the Nth imp spawn will be returned
+//All other cases will return 0. A negative (or zero) count value will behave as "all"
+timespan_t warlock_t::time_to_imps(int count)
+{
+  timespan_t max = 0_ms;
+  if (count >= as<int>(wild_imp_spawns.size()) || count <= 0){
+    for (auto ev : wild_imp_spawns)
+    {
+      timespan_t ex = debug_cast<actions::imp_delay_event_t*>(ev)->expected_time();
+      if(ex > max)
+        max = ex;
+    }
+    return max;
+  }
+  else
+  {
+    std::priority_queue<timespan_t> shortest;
+    for (auto ev : wild_imp_spawns)
+    {
+      timespan_t ex = debug_cast<actions::imp_delay_event_t*>(ev)->expected_time();
+      if (as<int>(shortest.size()) >= count && ex < shortest.top())
+      {
+        shortest.pop();
+        shortest.push(ex);
+      }
+      else if (as<int>(shortest.size()) < count)
+      {
+        shortest.push(ex);
+      }
+    }
+
+    if (shortest.size() > 0)
+    {
+      return shortest.top();
+    }
+    else
+    {
+      return 0_ms;
+    }
+  }
+}
+
+void warlock_t::darkglare_extension_helper(warlock_t* p, timespan_t darkglare_extension)
+{
+  for (const auto target : p->sim->target_non_sleeping_list)
+  {
+    warlock_td_t* td = p->get_target_data( target );
+    if (!td)
+    {
+      continue;
+    }
+    td->dots_agony->extend_duration(darkglare_extension);
+    td->dots_corruption->extend_duration(darkglare_extension);
+    td->dots_siphon_life->extend_duration(darkglare_extension);
+    td->dots_phantom_singularity->extend_duration(darkglare_extension);
+    td->dots_vile_taint->extend_duration(darkglare_extension);
+    for (auto& current_ua : td->dots_unstable_affliction)
+    {
+      current_ua->extend_duration(darkglare_extension);
+    }
+  }
+}
+
+//Function for returning the the number of imps that will spawn in a specified time period.
+int warlock_t::imps_spawned_during( timespan_t period )
+{
+  int count = 0;
+
+  for ( auto ev : wild_imp_spawns )
+  {
+    timespan_t ex = debug_cast<actions::imp_delay_event_t*>( ev )->expected_time();
+
+    if ( ex < period )
+      count++;
+  }
+
+  return count;
 }
 
 std::string warlock_t::create_profile( save_e stype )
@@ -765,7 +958,6 @@ std::string warlock_t::create_profile( save_e stype )
   {
     if ( initial_soul_shards != 3 )    profile_str += "soul_shards=" + util::to_string( initial_soul_shards ) + "\n";
     if ( !default_pet.empty() )        profile_str += "default_pet=" + default_pet + "\n";
-    if ( allow_sephuz != 0 )           profile_str += "allow_sephuz=" + util::to_string( allow_sephuz ) + "\n";
   }
 
   return profile_str;
@@ -778,8 +970,8 @@ void warlock_t::copy_from( player_t* source )
   warlock_t* p = debug_cast< warlock_t* >( source );
 
   initial_soul_shards = p->initial_soul_shards;
-  allow_sephuz = p->allow_sephuz;
   default_pet = p->default_pet;
+  flashpoint_threshold = p->flashpoint_threshold;
 }
 
 stat_e warlock_t::convert_hybrid_stat( stat_e s ) const
@@ -801,6 +993,27 @@ stat_e warlock_t::convert_hybrid_stat( stat_e s ) const
   case STAT_BONUS_ARMOR:
     return STAT_NONE;
   default: return s;
+  }
+}
+
+void warlock_t::vision_of_perfection_proc()
+{
+  if( vision_of_perfection_multiplier <= 0.0 )
+    return;
+
+  switch ( specialization() )
+  {
+    case WARLOCK_DESTRUCTION:
+      vision_of_perfection_proc_destro();
+      break;
+    case WARLOCK_AFFLICTION:
+      vision_of_perfection_proc_aff();
+      break;
+    case WARLOCK_DEMONOLOGY:
+      vision_of_perfection_proc_demo();
+      break;
+    default:
+      return;
   }
 }
 
@@ -841,7 +1054,7 @@ void warlock_t::create_all_pets()
   }
 }
 
-expr_t* warlock_t::create_pet_expression(const std::string& name_str)
+std::unique_ptr<expr_t> warlock_t::create_pet_expression(const std::string& name_str)
 {
   if (name_str == "last_cast_imps")
   {
@@ -865,7 +1078,7 @@ expr_t* warlock_t::create_pet_expression(const std::string& name_str)
   return player_t::create_expression(name_str);
 }
 
-expr_t* warlock_t::create_expression( const std::string& name_str )
+std::unique_ptr<expr_t> warlock_t::create_expression( const std::string& name_str )
 {
   if ( name_str == "time_to_shard" )
   {
@@ -877,11 +1090,11 @@ expr_t* warlock_t::create_expression( const std::string& name_str )
       double active_agonies = get_active_dots(agony_id);
       if (sim->debug)
         sim->out_debug.printf("active agonies: %f", active_agonies);
-      if (active_agonies == 0)
+      dot_t* agony = td->dots_agony;
+      if ( active_agonies == 0 || !agony->current_action )
       {
         return std::numeric_limits<double>::infinity();
       }
-      dot_t* agony = td->dots_agony;
       action_state_t* agony_state = agony->current_action->get_state(agony->state);
       timespan_t dot_tick_time = agony->current_action->tick_time(agony_state);
 
@@ -914,6 +1127,53 @@ expr_t* warlock_t::create_expression( const std::string& name_str )
   else if (name_str == "deathbolt_setup") {
     return create_aff_expression(name_str);
   }
+  // TODO: Remove the deprecated buff expressions once the APL is adjusted for
+  // havoc_active/havoc_remains.
+  else if ( name_str == "havoc_active" || name_str == "buff.active_havoc.up" ) {
+    return make_fn_expr( name_str, [ this ]
+    {
+      return havoc_target != nullptr;
+    } );
+  }
+  else if ( name_str == "havoc_remains" || name_str == "buff.active_havoc.remains" ) {
+    return make_fn_expr( name_str, [ this ]
+    {
+      return havoc_target ? get_target_data( havoc_target )->debuffs_havoc->remains().total_seconds() : 0.0;
+    } );
+  }
+  else if (name_str == "incoming_imps") {
+    return make_fn_expr(name_str, [this]{
+      return this->get_spawning_imp_count();
+    });
+  }
+
+  std::vector<std::string> splits = util::string_split( name_str, "." );
+
+  if (splits.size() == 3 && splits[0] == "time_to_imps" && splits[2] == "remains")
+  {
+    std::string amt = splits[1];
+
+    return make_fn_expr(name_str, [this, amt](){
+      if(amt == "all")
+      {
+        return this->time_to_imps(-1);
+      }
+      else
+      {
+        return this->time_to_imps(std::stoi(amt));
+      }
+    });
+  }
+  else if ( splits.size() == 2 && util::str_compare_ci( splits[0], "imps_spawned_during" ) )
+  {
+    std::string period = splits[1];
+
+    return make_fn_expr( name_str, [this, period]()
+    {
+      // Add a custom split .summon_demonic_tyrant which returns its cast time.
+      return this->imps_spawned_during( timespan_t::from_millis( std::stod( period ) ) );
+    } );
+  }
 
   return player_t::create_expression( name_str );
 }
@@ -930,7 +1190,7 @@ public:
 
   }
 
-  virtual void html_customsection( report::sc_html_stream& /* os*/ ) override
+  void html_customsection( report::sc_html_stream& /* os*/ ) override
   {
     (void)p;
     /*// Custom Class Section
@@ -946,34 +1206,18 @@ private:
   warlock_t& p;
 };
 
-static void do_trinket_init( warlock_t*                player,
-  specialization_e         spec,
-  const special_effect_t*& ptr,
-  const special_effect_t&  effect )
-{
-  // Ensure we have the spell data. This will prevent the trinket effect from working on live
-  // Simulationcraft. Also ensure correct specialization.
-  if ( !player->find_spell( effect.spell_id )->ok() ||
-    player->specialization() != spec )
-  {
-    return;
-  }
-  // Set pointer, module considers non-null pointer to mean the effect is "enabled"
-  ptr = &( effect );
-}
-
 struct warlock_module_t : public module_t
 {
   warlock_module_t() : module_t( WARLOCK ) { }
 
-  virtual player_t* create_player( sim_t* sim, const std::string& name, race_e r = RACE_NONE ) const override
+  player_t* create_player( sim_t* sim, const std::string& name, race_e r = RACE_NONE ) const override
   {
     auto  p = new warlock_t( sim, name, r );
     p->report_extension = std::unique_ptr<player_report_extension_t>( new warlock_report_t( *p ) );
     return p;
   }
 
-  virtual void static_init() const override
+  void static_init() const override
   {
     // Leyshock's!
     // Shared spells
@@ -1077,17 +1321,19 @@ struct warlock_module_t : public module_t
     expansion::bfa::register_leyshocks_trigger( 264119, STAT_HASTE_RATING );
   }
 
-  virtual void register_hotfixes() const override { }
+  void register_hotfixes() const override { }
 
-  virtual bool valid() const override { return true; }
-  virtual void init( player_t* ) const override { }
-  virtual void combat_begin( sim_t* ) const override { }
-  virtual void combat_end( sim_t* ) const override { }
+  bool valid() const override { return true; }
+  void init( player_t* ) const override { }
+  void combat_begin( sim_t* ) const override { }
+  void combat_end( sim_t* ) const override { }
 };
 
 warlock::warlock_t::pets_t::pets_t( warlock_t* w ) :
   active( nullptr ),
   last( nullptr ),
+  vop_infernals("vop_infernal", w),
+  vop_darkglares("vop_darkglare", w),
   dreadstalkers( "dreadstalker", w ),
   vilefiends( "vilefiend", w ),
   demonic_tyrants( "demonic_tyrant", w ),

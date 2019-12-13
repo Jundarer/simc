@@ -187,11 +187,77 @@ bool is_proc_description( const std::string& description_str )
   return false;
 }
 
+double stat_value( const player_t* p, stat_e stat )
+{
+  double v = 0;
+  switch ( stat )
+  {
+    case STAT_CRIT_RATING:
+      v = p->composite_melee_crit_rating();
+      break;
+    case STAT_HASTE_RATING:
+      v = p->composite_melee_haste_rating();
+      break;
+    case STAT_MASTERY_RATING:
+      v = p->composite_mastery_rating();
+      break;
+    case STAT_VERSATILITY_RATING:
+      v = p->composite_damage_versatility_rating();
+      break;
+    default:
+      break;
+  }
+
+  // Ignore scale factor contributions when determining highest stat
+  if ( p->sim->scaling->scale_stat == stat )
+  {
+    if ( util::is_combat_rating( stat ) )
+    {
+      v -= p->sim->scaling->scale_value *
+        p->composite_rating_multiplier( util::stat_to_rating( stat ) );
+    }
+    else if ( util::is_primary_stat( stat ) )
+    {
+      // stat_e and attribute_e match on primary stats
+      v -= p->sim->scaling->scale_value *
+        p->composite_attribute_multiplier( static_cast<attribute_e>( stat ) );
+    }
+    else if ( stat == STAT_SPELL_POWER )
+    {
+      v -= p->sim->scaling->scale_value * p->composite_spell_power_multiplier();
+    }
+    else if ( stat == STAT_ATTACK_POWER )
+    {
+      v -= p->sim->scaling->scale_value * p->composite_attack_power_multiplier();
+    }
+  }
+
+  return v;
+}
+
 } // anonymous namespace ============================================
 
 
 double util::wall_time() { return wall_sw.elapsed(); }
 double util::cpu_time() { return cpu_sw.elapsed(); }
+
+// Note, does not take into account that technically players could have different amounts of
+// melee/spell/ranged ratings for specific things. Blizzard has not used this system thus far in any
+// "normal" player-driven stuff.
+stat_e util::highest_stat( const player_t* p, const std::vector<stat_e>& stats )
+{
+  std::vector<double> values;
+
+  range::for_each( stats, [p, &values]( stat_e stat ) {
+      values.push_back( stat_value( p, stat ) );
+  } );
+
+  auto it = std::max_element( values.cbegin(), values.cend() );
+  auto index = std::distance( values.cbegin(), it );
+
+  return stats[ index ];
+}
+
 
 /// case-insensitive string comparison
 bool util::str_compare_ci( const std::string& l,
@@ -287,6 +353,7 @@ const char* util::race_type_string( race_e type )
   switch ( type )
   {
     case RACE_NONE:                return "none";
+    case RACE_ABERRATION:          return "aberration";
     case RACE_BEAST:               return "beast";
     case RACE_BLOOD_ELF:           return "blood_elf";
     case RACE_DEMON:               return "demon";
@@ -314,6 +381,8 @@ const char* util::race_type_string( race_e type )
     case RACE_NIGHTBORNE:          return "nightborne";
     case RACE_DARK_IRON_DWARF:     return "dark_iron_dwarf";
     case RACE_MAGHAR_ORC:          return "maghar_orc";
+    case RACE_ZANDALARI_TROLL:     return "zandalari_troll";
+    case RACE_KUL_TIRAN:           return "kul_tiran";
     case RACE_MAX:                 return "unknown";
     case RACE_UNKNOWN:             return "unknown";
     // no default statement so we get warnings if something is missing.
@@ -717,16 +786,16 @@ const char* util::full_result_type_string( full_result_e fulltype )
 
 // amount_type_string =======================================================
 
-const char* util::amount_type_string( dmg_e type )
+const char* util::amount_type_string( result_amount_type type )
 {
   switch ( type )
   {
-    case RESULT_TYPE_NONE: return "none";
-    case DMG_DIRECT:       return "direct_damage";
-    case DMG_OVER_TIME:    return "tick_damage";
-    case HEAL_DIRECT:      return "direct_heal";
-    case HEAL_OVER_TIME:   return "tick_heal";
-    case ABSORB:           return "absorb";
+    case result_amount_type::NONE: return "none";
+    case result_amount_type::DMG_DIRECT:       return "direct_damage";
+    case result_amount_type::DMG_OVER_TIME:    return "tick_damage";
+    case result_amount_type::HEAL_DIRECT:      return "direct_heal";
+    case result_amount_type::HEAL_OVER_TIME:   return "tick_heal";
+    case result_amount_type::ABSORB:           return "absorb";
     default:               return "unknown";
   }
 }
@@ -890,21 +959,27 @@ const char* util::weapon_subclass_string( int subclass )
 {
   switch ( subclass )
   {
-    case ITEM_SUBCLASS_WEAPON_AXE:
-    case ITEM_SUBCLASS_WEAPON_AXE2:     return "Axe";
+    case ITEM_SUBCLASS_WEAPON_AXE:      return "One-handed Axe";
+    case ITEM_SUBCLASS_WEAPON_AXE2:     return "Two-handed Axe";
     case ITEM_SUBCLASS_WEAPON_BOW:      return "Bow";
     case ITEM_SUBCLASS_WEAPON_GUN:      return "Gun";
-    case ITEM_SUBCLASS_WEAPON_MACE:
-    case ITEM_SUBCLASS_WEAPON_MACE2:    return "Mace";
+    case ITEM_SUBCLASS_WEAPON_MACE:     return "One-handed Mace";
+    case ITEM_SUBCLASS_WEAPON_MACE2:    return "Two-handed Mace";
     case ITEM_SUBCLASS_WEAPON_POLEARM:  return "Polearm";
-    case ITEM_SUBCLASS_WEAPON_SWORD:
-    case ITEM_SUBCLASS_WEAPON_SWORD2:   return "Sword";
+    case ITEM_SUBCLASS_WEAPON_SWORD:    return "One-handed Sword";
+    case ITEM_SUBCLASS_WEAPON_SWORD2:   return "Two-handed Sword";
     case ITEM_SUBCLASS_WEAPON_STAFF:    return "Staff";
     case ITEM_SUBCLASS_WEAPON_FIST:     return "Fist Weapon";
     case ITEM_SUBCLASS_WEAPON_DAGGER:   return "Dagger";
     case ITEM_SUBCLASS_WEAPON_THROWN:   return "Thrown";
     case ITEM_SUBCLASS_WEAPON_CROSSBOW: return "Crossbow";
     case ITEM_SUBCLASS_WEAPON_WAND:     return "Wand";
+    case ITEM_SUBCLASS_WEAPON_FISHING_POLE: return "Fishing Pole";
+    case ITEM_SUBCLASS_WEAPON_MISC:     return "Miscellaneous";
+    case ITEM_SUBCLASS_WEAPON_SPEAR:    return "Spear";
+    case ITEM_SUBCLASS_WEAPON_EXOTIC:   return "Exotic";
+    case ITEM_SUBCLASS_WEAPON_EXOTIC2:  return "Exotic (2)";
+    case ITEM_SUBCLASS_WEAPON_WARGLAIVE: return "War Glaive";
     default:                            return "Unknown";
   }
 }
@@ -1042,7 +1117,7 @@ const char* util::armor_type_string( item_subclass_armor type )
 
 item_subclass_armor util::parse_armor_type( const std::string& name )
 {
-  return parse_enum<item_subclass_armor, ITEM_SUBCLASS_ARMOR_MISC, ITEM_SUBCLASS_ARMOR_PLATE, armor_type_string>( name );
+  return parse_enum<item_subclass_armor, ITEM_SUBCLASS_ARMOR_MISC, ITEM_SUBCLASS_ARMOR_LIBRAM, armor_type_string>( name );
 }
 
 // parse_slot_type ==========================================================
@@ -1054,24 +1129,24 @@ slot_e util::parse_slot_type( const std::string& name )
 
 // movement_direction_string ================================================
 
-const char* util::movement_direction_string( movement_direction_e m )
+const char* util::movement_direction_string( movement_direction_type m )
 {
   switch ( m )
   {
-    case MOVEMENT_OMNI: return "omni";
-    case MOVEMENT_TOWARDS: return "towards";
-    case MOVEMENT_AWAY: return "away";
-    case MOVEMENT_RANDOM: return "random";
-    case MOVEMENT_NONE: return "none";
+    case movement_direction_type::OMNI: return "omni";
+    case movement_direction_type::TOWARDS: return "towards";
+    case movement_direction_type::AWAY: return "away";
+    case movement_direction_type::RANDOM: return "random";
+    case movement_direction_type::NONE: return "none";
     default: return "";
   }
 }
 
 // parse_movement_type ======================================================
 
-movement_direction_e util::parse_movement_direction( const std::string& name )
+movement_direction_type util::parse_movement_direction( const std::string& name )
 {
-  return parse_enum<movement_direction_e, MOVEMENT_UNKNOWN, MOVEMENT_DIRECTION_MAX, movement_direction_string>( name );
+  return parse_enum<movement_direction_type, movement_direction_type::NONE, movement_direction_type::MAX, movement_direction_string>( name );
 }
 
 // cache_type_string ========================================================
@@ -1100,7 +1175,6 @@ const char* util::cache_type_string( cache_e c )
     case CACHE_HASTE:        return "haste";
     case CACHE_ATTACK_HASTE: return "attack_haste";
     case CACHE_SPELL_HASTE:  return "spell_haste";
-    case CACHE_SPEED:        return "speed";
     case CACHE_ATTACK_SPEED: return "attack_speed";
     case CACHE_SPELL_SPEED:  return "spell_speed";
     case CACHE_MASTERY:      return "mastery";
@@ -1117,6 +1191,8 @@ const char* util::cache_type_string( cache_e c )
     case CACHE_MITIGATION_VERSATILITY:  return "mitigation_versatility";
     case CACHE_LEECH: return "leech";
     case CACHE_RUN_SPEED: return "run_speed";
+    case CACHE_RPPM_HASTE: return "rppm_haste_coeff";
+    case CACHE_RPPM_CRIT: return "rppm_crit_coeff";
 
     default: return "unknown";
   }
@@ -1201,6 +1277,7 @@ const char* util::special_effect_source_string( special_effect_source_e type )
     case SPECIAL_EFFECT_SOURCE_SOCKET_BONUS: return "socket_bonus";
     case SPECIAL_EFFECT_SOURCE_RACE: return "race";
     case SPECIAL_EFFECT_SOURCE_AZERITE: return "azerite";
+    case SPECIAL_EFFECT_SOURCE_AZERITE_ESSENCE: return "azerite_essence";
     case SPECIAL_EFFECT_SOURCE_FALLBACK: return "fallback";
     default:                            return "unknown";
   }
@@ -1267,6 +1344,9 @@ const char* util::stat_type_string( stat_e stat )
     case STAT_LEECH_RATING: return "leech_rating";
     case STAT_SPEED_RATING: return "speed_rating";
     case STAT_AVOIDANCE_RATING: return "avoidance_rating";
+
+    case STAT_CORRUPTION: return "corruption";
+    case STAT_CORRUPTION_RESISTANCE: return "corruption_resistance";
 
     case STAT_ALL: return "all";
 
@@ -1336,6 +1416,9 @@ const char* util::stat_type_abbrev( stat_e stat )
     case STAT_LEECH_RATING: return "Leech";
     case STAT_SPEED_RATING: return "RunSpeed";
     case STAT_AVOIDANCE_RATING: return "Avoidance";
+
+    case STAT_CORRUPTION: return "Cor";
+    case STAT_CORRUPTION_RESISTANCE: return "Rcor";
 
     case STAT_ALL: return "All";
 
@@ -1719,6 +1802,8 @@ unsigned util::race_id( race_e race )
     case RACE_LIGHTFORGED_DRAENEI: return 30;
     case RACE_DARK_IRON_DWARF: return 12;
     case RACE_MAGHAR_ORC: return 14;
+    case RACE_ZANDALARI_TROLL: return 31;
+    case RACE_KUL_TIRAN: return 32;
     default: return 0;
   }
 }
@@ -1840,6 +1925,8 @@ race_e util::translate_race_id( int rid )
     case 28: return RACE_HIGHMOUNTAIN_TAUREN;
     case 29: return RACE_VOID_ELF;
     case 30: return RACE_LIGHTFORGED_DRAENEI;
+    case 31: return RACE_ZANDALARI_TROLL;
+    case 32: return RACE_KUL_TIRAN;
     case 34: return RACE_DARK_IRON_DWARF;
     case 36: return RACE_MAGHAR_ORC;
   }
@@ -1880,6 +1967,8 @@ stat_e util::translate_item_mod( int item_mod )
     case ITEM_MOD_LEECH_RATING:        return STAT_LEECH_RATING;
     case ITEM_MOD_SPEED_RATING:        return STAT_SPEED_RATING;
     case ITEM_MOD_AVOIDANCE_RATING:    return STAT_AVOIDANCE_RATING;
+    case ITEM_MOD_CORRUPTION:          return STAT_CORRUPTION;
+    case ITEM_MOD_CORRUPTION_RESISTANCE: return STAT_CORRUPTION_RESISTANCE;
     default:                           return STAT_NONE;
   }
 }
@@ -1913,6 +2002,8 @@ int util::translate_stat( stat_e stat )
     case STAT_LEECH_RATING:       return ITEM_MOD_LEECH_RATING;
     case STAT_SPEED_RATING:       return ITEM_MOD_SPEED_RATING;
     case STAT_AVOIDANCE_RATING:   return ITEM_MOD_AVOIDANCE_RATING;
+    case STAT_CORRUPTION:         return ITEM_MOD_CORRUPTION;
+    case STAT_CORRUPTION_RESISTANCE: return ITEM_MOD_CORRUPTION_RESISTANCE;
     default:                      return ITEM_MOD_NONE;
   }
 }
@@ -1968,6 +2059,47 @@ stat_e util::translate_rating_mod( unsigned ratings )
   return STAT_NONE;
 }
 
+rating_e util::stat_to_rating( stat_e s )
+{
+  switch ( s )
+  {
+    case STAT_EXPERTISE_RATING:
+    case STAT_EXPERTISE_RATING2:
+      return RATING_EXPERTISE;
+    case STAT_HIT_RATING:
+    case STAT_HIT_RATING2:
+      return RATING_MELEE_HIT;
+    case STAT_CRIT_RATING:
+      return RATING_MELEE_CRIT;
+    case STAT_HASTE_RATING:
+      return RATING_MELEE_HASTE;
+    case STAT_MASTERY_RATING:
+      return RATING_MASTERY;
+    case STAT_VERSATILITY_RATING:
+      return RATING_DAMAGE_VERSATILITY;
+    case STAT_LEECH_RATING:
+      return RATING_LEECH;
+    case STAT_SPEED_RATING:
+      return RATING_SPEED;
+    case STAT_AVOIDANCE_RATING:
+      return RATING_AVOIDANCE;
+    case STAT_RESILIENCE_RATING:
+      return RATING_PVP_RESILIENCE;
+    case STAT_DODGE_RATING:
+      return RATING_DODGE;
+    case STAT_PARRY_RATING:
+      return RATING_PARRY;
+    case STAT_BLOCK_RATING:
+      return RATING_BLOCK;
+    case STAT_CORRUPTION:
+      return RATING_CORRUPTION;
+    case STAT_CORRUPTION_RESISTANCE:
+      return RATING_CORRUPTION_RESISTANCE;
+    default:
+      return RATING_MAX;
+  }
+}
+
 // translate_weapon_subclass ================================================
 
 weapon_e util::translate_weapon_subclass( int weapon_subclass )
@@ -2018,9 +2150,7 @@ item_subclass_weapon util::translate_weapon( weapon_e weapon )
     case WEAPON_THROWN:    return ITEM_SUBCLASS_WEAPON_THROWN;
     case WEAPON_WAND:      return ITEM_SUBCLASS_WEAPON_WAND;
     case WEAPON_WARGLAIVE: return ITEM_SUBCLASS_WEAPON_WARGLAIVE;
-    default:
-      assert( false );
-      return ITEM_SUBCLASS_WEAPON_MISC;
+    default:               return ITEM_SUBCLASS_WEAPON_INVALID;
   }
 }
 
@@ -2200,15 +2330,15 @@ const char* util::item_quality_string( int quality )
 }
 
 // retarget_event_string ====================================================
-const char* util::retarget_event_string( retarget_event_e event )
+const char* util::retarget_event_string( retarget_source event )
 {
   switch ( event )
   {
-    case ACTOR_ARISE: return "actor_arise";
-    case ACTOR_DEMISE: return "actor_demise";
-    case ACTOR_INVULNERABLE: return "actor_invulnerable";
-    case ACTOR_VULNERABLE: return "actor_vulnnerable";
-    case SELF_ARISE: return "self_arise";
+    case retarget_source::ACTOR_ARISE: return "actor_arise";
+    case retarget_source::ACTOR_DEMISE: return "actor_demise";
+    case retarget_source::ACTOR_INVULNERABLE: return "actor_invulnerable";
+    case retarget_source::ACTOR_VULNERABLE: return "actor_vulnnerable";
+    case retarget_source::SELF_ARISE: return "self_arise";
     default: return "unknown";
   }
 }
@@ -2616,6 +2746,15 @@ std::string util::decode_html( const std::string& input )
   return output;
 }
 
+std::string util::remove_special_chars( const std::string& s )
+{
+  std::string r = s;
+  // Allow alphanumeric characters, underscore and non-ASCII characters.
+  auto pred = [] ( char c ) { return !std::isalnum( c ) && c != '_' && (unsigned char)c < 128; };
+  r.erase( std::remove_if( r.begin(), r.end(), pred ), r.end() );
+  return r;
+}
+
 bool util::is_combat_rating( item_mod_type t )
 {
   switch ( t )
@@ -2630,9 +2769,6 @@ bool util::is_combat_rating( item_mod_type t )
     case ITEM_MOD_CRIT_MELEE_RATING:
     case ITEM_MOD_CRIT_RANGED_RATING:
     case ITEM_MOD_CRIT_SPELL_RATING:
-    case ITEM_MOD_HIT_TAKEN_MELEE_RATING:
-    case ITEM_MOD_HIT_TAKEN_RANGED_RATING:
-    case ITEM_MOD_HIT_TAKEN_SPELL_RATING:
     case ITEM_MOD_CRIT_TAKEN_MELEE_RATING:
     case ITEM_MOD_CRIT_TAKEN_RANGED_RATING:
     case ITEM_MOD_CRIT_TAKEN_SPELL_RATING:
@@ -2652,6 +2788,34 @@ bool util::is_combat_rating( item_mod_type t )
     case ITEM_MOD_AVOIDANCE_RATING:
     case ITEM_MOD_VERSATILITY_RATING:
     case ITEM_MOD_EXTRA_ARMOR:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool util::is_combat_rating( stat_e t )
+{
+  switch ( t )
+  {
+    case STAT_CRIT_RATING:
+    case STAT_HASTE_RATING:
+    case STAT_MASTERY_RATING:
+    case STAT_VERSATILITY_RATING:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool util::is_primary_stat( stat_e t )
+{
+  switch ( t )
+  {
+    case STAT_AGILITY:
+    case STAT_INTELLECT:
+    case STAT_STRENGTH:
+    case STAT_STAMINA:
       return true;
     default:
       return false;
@@ -2775,7 +2939,15 @@ void util::tokenize( std::string& name )
 
   // remove leading '_' or '+'
   std::string::size_type n = name.find_first_not_of( "_+" );
-  std::string::iterator it = name.erase( name.begin(), name.begin() + n );
+  std::string::iterator it;
+  if ( n != std::string::npos )
+  {
+    it = name.erase( name.begin(), name.begin() + n );
+  }
+  else
+  {
+    it = name.begin();
+  }
 
   for ( ; it != name.end(); )
   {
@@ -3036,6 +3208,7 @@ bool is_alliance( race_e race )
     case RACE_VOID_ELF:
     case RACE_LIGHTFORGED_DRAENEI:
     case RACE_DARK_IRON_DWARF:
+    case RACE_KUL_TIRAN:
       return true;
     default:
       return false;
@@ -3056,6 +3229,7 @@ bool is_horde( race_e race )
     case RACE_HIGHMOUNTAIN_TAUREN:
     case RACE_NIGHTBORNE:
     case RACE_MAGHAR_ORC:
+    case RACE_ZANDALARI_TROLL:
       return true;
     default:
       return false;

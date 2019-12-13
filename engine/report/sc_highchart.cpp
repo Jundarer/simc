@@ -9,6 +9,9 @@ namespace
 static const char* TEXT_COLOR     = "#CACACA";
 static const char* TEXT_COLOR_ALT = "black";
 
+static const char* SUBTEXT_COLOR = "#ACACAC";
+static const char* SUBTEXT_COLOR_ALT = "grey";
+
 static const char* TEXT_MEAN_COLOR = "#CC8888";
 static const char* TEXT_MAX_COLOR  = "#8888CC";
 
@@ -21,10 +24,9 @@ using namespace highchart;
 
 sc_js_t& highchart::theme( sc_js_t& json, highchart_theme_e theme )
 {
-  std::string _bg_color =
-      theme == THEME_DEFAULT ? CHART_BGCOLOR : CHART_BGCOLOR_ALT;
-  std::string _text_color =
-      theme == THEME_DEFAULT ? TEXT_COLOR : TEXT_COLOR_ALT;
+  std::string _bg_color = theme == THEME_DEFAULT ? CHART_BGCOLOR : CHART_BGCOLOR_ALT;
+  std::string _text_color = theme == THEME_DEFAULT ? TEXT_COLOR : TEXT_COLOR_ALT;
+  std::string _subtext_color = theme == THEME_DEFAULT ? SUBTEXT_COLOR : SUBTEXT_COLOR_ALT;
 
   json.set( "credits", false );
 
@@ -32,17 +34,17 @@ sc_js_t& highchart::theme( sc_js_t& json, highchart_theme_e theme )
   json.set( "lang.thousandsSep", "," );
 
   json.set( "legend.enabled", false );
-  json.set( "legend.itemStyle.fontsize", "14px" );
+  json.set( "legend.itemStyle.fontSize", "14px" );
   json.set( "legend.itemStyle.color", _text_color );
   // json.set( "legend.itemStyle.textShadow", TEXT_OUTLINE );
 
   json.set( "chart.borderRadius", 4 );
   json.set( "chart.backgroundColor", _bg_color );
   json.set( "chart.style.fontSize", "13px" );
-  json.add( "chart.spacing", 2 )
-      .add( "chart.spacing", 2 )
-      .add( "chart.spacing", 2 )
-      .add( "chart.spacing", 2 );
+  json.add( "chart.spacing", 10 )
+      .add( "chart.spacing", 10 )
+      .add( "chart.spacing", 10 )
+      .add( "chart.spacing", 10 );
 
   json.set( "xAxis.lineColor", _text_color );
   json.set( "xAxis.tickColor", _text_color );
@@ -62,9 +64,11 @@ sc_js_t& highchart::theme( sc_js_t& json, highchart_theme_e theme )
 
   json.set( "title.style.fontSize", "15px" );
   json.set( "title.style.color", _text_color );
+  json.set( "title.style.textOverflow", "ellipsis" );
   // json.set( "title.style.textShadow", TEXT_OUTLINE );
 
-  json.set( "subtitle.style.fontsize", "13px" );
+  json.set( "subtitle.style.fontSize", "13px" );
+  json.set( "subtitle.style.color", _subtext_color );
   // json.set( "subtitle.style.textShadow", TEXT_OUTLINE );
 
   json.set( "tooltip.backgroundColor", "#3F3E38" );
@@ -99,7 +103,7 @@ std::string highchart::build_id( const stats_t& stats,
   std::string s;
 
   s += "actor" + util::to_string( stats.player->index );
-  s += "_" + stats.name_str;
+  s += "_" + util::remove_special_chars( stats.name_str );
   s += "_";
   s += util::stats_type_string( stats.type );
   s += suffix;
@@ -117,7 +121,7 @@ std::string highchart::build_id( const player_t& actor,
 
 std::string highchart::build_id( const buff_t& buff, const std::string& suffix )
 {
-  std::string s = "buff_" + buff.name_str;
+  std::string s = "buff_" + util::remove_special_chars( buff.name_str );
   if ( buff.player )
     s += "_actor" + util::to_string( buff.player->index );
 
@@ -134,11 +138,11 @@ chart_t::chart_t( const std::string& id_str, const sim_t& sim )
 
 std::string chart_t::to_target_div() const
 {
-  std::string str_ = "<div id=\"" + id_str_ + "\"";
+  std::string str_ = "<div class=\"charts\" id=\"" + id_str_ + "\"";
   str_ += " style=\"min-width: " + util::to_string( width_ ) + "px;";
   if ( height_ > 0 )
     str_ += " min-height: " + util::to_string( height_ ) + "px;";
-  str_ += "margin: 5px;\"></div>\n";
+  str_ += "\"></div>\n";
 
   return str_;
 }
@@ -192,18 +196,17 @@ std::string chart_t::to_string() const
   std::string javascript = b.GetString();
   javascript.erase( std::remove( javascript.begin(), javascript.end(), '\n' ),
                     javascript.end() );
-  std::string str_ = "<div id=\"" + id_str_ + "\"";
+  std::string str_ = "<div class=\"charts\" id=\"" + id_str_ + "\"";
   str_ += " style=\"min-width: " + util::to_string( width_ ) + "px;";
   if ( height_ > 0 )
     str_ += " height: " + util::to_string( height_ ) + "px;";
-  str_ += "margin: 5px;\"></div>\n";
+  str_ += "\"></div>\n";
   str_ += "<script type=\"text/javascript\">\n";
   if ( !toggle_id_str_.empty() )
   {
     str_ += "jQuery( document ).ready( function( $ ) {\n";
     str_ += "$('#" + toggle_id_str_ + "').on('click', function() {\n";
-    str_ += "console.log(\"Loading " + id_str_ + ": " + toggle_id_str_ +
-            " ...\" );\n";
+    str_ += "console.log(\"Loading " + id_str_ + ": " + toggle_id_str_ + " ...\" );\n";
     str_ += "$('#" + id_str_ + "').highcharts(";
     str_ += javascript;
     str_ += ");\n});\n});\n";

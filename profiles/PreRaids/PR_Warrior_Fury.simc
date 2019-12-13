@@ -8,9 +8,9 @@ position=back
 talents=2122123
 
 # Default consumables
-potion=bursting_blood
-flask=undertow
-food=bountiful_captains_feast
+potion=potion_of_unbridled_fury
+flask=greater_flask_of_the_undertow
+food=mechdowels_big_mech
 augmentation=battle_scarred
 
 # This default action priority list is automatically created based on your character.
@@ -25,6 +25,10 @@ actions.precombat+=/food
 actions.precombat+=/augmentation
 # Snapshot raid buffed stats before combat begins and pre-potting is done.
 actions.precombat+=/snapshot_stats
+actions.precombat+=/use_item,name=azsharas_font_of_power
+actions.precombat+=/memory_of_lucid_dreams
+actions.precombat+=/guardian_of_azeroth
+actions.precombat+=/recklessness
 actions.precombat+=/potion
 
 # Executed every time the actor is available.
@@ -32,40 +36,47 @@ actions=auto_attack
 actions+=/charge
 # This is mostly to prevent cooldowns from being accidentally used during movement.
 actions+=/run_action_list,name=movement,if=movement.distance>5
-actions+=/heroic_leap,if=(raid_event.movement.distance>25&raid_event.movement.in>45)|!raid_event.movement.exists
+actions+=/heroic_leap,if=(raid_event.movement.distance>25&raid_event.movement.in>45)
 actions+=/potion
-actions+=/furious_slash,if=talent.furious_slash.enabled&(buff.furious_slash.stack<3|buff.furious_slash.remains<3|(cooldown.recklessness.remains<3&buff.furious_slash.remains<9))
-actions+=/bloodthirst,if=equipped.kazzalax_fujiedas_fury&(buff.fujiedas_fury.down|remains<2)
 actions+=/rampage,if=cooldown.recklessness.remains<3
-actions+=/recklessness
+actions+=/blood_of_the_enemy,if=buff.recklessness.up
+actions+=/purifying_blast,if=!buff.recklessness.up&!buff.siegebreaker.up
+actions+=/ripple_in_space,if=!buff.recklessness.up&!buff.siegebreaker.up
+actions+=/worldvein_resonance,if=!buff.recklessness.up&!buff.siegebreaker.up
+actions+=/focused_azerite_beam,if=!buff.recklessness.up&!buff.siegebreaker.up
+actions+=/concentrated_flame,if=!buff.recklessness.up&!buff.siegebreaker.up&dot.concentrated_flame_burn.remains=0
+actions+=/the_unbound_force,if=buff.reckless_force.up
+actions+=/guardian_of_azeroth,if=!buff.recklessness.up
+actions+=/memory_of_lucid_dreams,if=!buff.recklessness.up
+actions+=/recklessness,if=!essence.condensed_lifeforce.major&!essence.blood_of_the_enemy.major|cooldown.guardian_of_azeroth.remains>20|buff.guardian_of_azeroth.up|cooldown.blood_of_the_enemy.remains<gcd
 actions+=/whirlwind,if=spell_targets.whirlwind>1&!buff.meat_cleaver.up
-actions+=/blood_fury,if=buff.recklessness.up
-actions+=/berserking,if=buff.recklessness.up
-actions+=/arcane_torrent,if=rage<40&!buff.recklessness.up
+actions+=/blood_fury
+actions+=/berserking
 actions+=/lights_judgment,if=buff.recklessness.down
-actions+=/fireblood,if=buff.recklessness.up
-actions+=/ancestral_call,if=buff.recklessness.up
+actions+=/fireblood
+actions+=/ancestral_call
 actions+=/run_action_list,name=single_target
 
 actions.movement=heroic_leap
 
-actions.single_target=siegebreaker,if=buff.recklessness.up|cooldown.recklessness.remains>20
-actions.single_target+=/rampage,if=buff.recklessness.up|(talent.frothing_berserker.enabled|talent.carnage.enabled&(buff.enrage.remains<gcd|rage>90)|talent.massacre.enabled&(buff.enrage.remains<gcd|rage>90))
-actions.single_target+=/execute,if=buff.enrage.up
-actions.single_target+=/bloodthirst,if=buff.enrage.down
+actions.single_target=siegebreaker
+actions.single_target+=/rampage,if=(buff.recklessness.up|buff.memory_of_lucid_dreams.up)|(talent.frothing_berserker.enabled|talent.carnage.enabled&(buff.enrage.remains<gcd|rage>90)|talent.massacre.enabled&(buff.enrage.remains<gcd|rage>90))
+actions.single_target+=/execute
+actions.single_target+=/furious_slash,if=!buff.bloodlust.up&buff.furious_slash.remains<3
+actions.single_target+=/bladestorm,if=prev_gcd.1.rampage
+actions.single_target+=/bloodthirst,if=buff.enrage.down|azerite.cold_steel_hot_blood.rank>1
+actions.single_target+=/dragon_roar,if=buff.enrage.up
 actions.single_target+=/raging_blow,if=charges=2
 actions.single_target+=/bloodthirst
-actions.single_target+=/bladestorm,if=prev_gcd.1.rampage&(debuff.siegebreaker.up|!talent.siegebreaker.enabled)
-actions.single_target+=/dragon_roar,if=buff.enrage.up&(debuff.siegebreaker.up|!talent.siegebreaker.enabled)
 actions.single_target+=/raging_blow,if=talent.carnage.enabled|(talent.massacre.enabled&rage<80)|(talent.frothing_berserker.enabled&rage<90)
 actions.single_target+=/furious_slash,if=talent.furious_slash.enabled
 actions.single_target+=/whirlwind
 
-head=helm_of_the_raptor_king,id=159422,bonus_id=4779/1512/4786/4775,azerite_powers=438/30/0/13
-neck=heart_of_azeroth,id=158075,bonus_id=4932/4933/4936/1524,azerite_level=27
-shoulders=kraken_shell_pauldrons,id=159431,bonus_id=4779/1512/4786/4775,azerite_powers=438/459/0/13
+head=helm_of_the_raptor_king,id=159422,bonus_id=4779/1512/4786/4775,azerite_powers=438/30/13
+neck=heart_of_azeroth,id=158075,bonus_id=4929/1524,azerite_level=27
+shoulders=kraken_shell_pauldrons,id=159431,bonus_id=4779/1512/4786/4775,azerite_powers=438/459/13
 back=drape_of_the_loyal_vassal,id=158375,bonus_id=4779/1512/4786
-chest=ashvane_wardens_cuirass,id=159440,bonus_id=4779/1512/4786/4775,azerite_powers=438/30/0/13
+chest=ashvane_wardens_cuirass,id=159440,bonus_id=4779/1512/4786/4775,azerite_powers=438/30/13
 wrists=stonefury_vambraces,id=158359,bonus_id=4779/1512/4786
 hands=fangproof_gauntlets,id=159437,bonus_id=4779/1512/4786
 waist=girdle_of_pestilent_purification,id=159418,bonus_id=4779/1512/4786
@@ -83,7 +94,7 @@ off_hand=jeweled_sharksplitter,id=159634,bonus_id=4779/1512/4786,enchant=masterf
 # gear_strength=3099
 # gear_stamina=4809
 # gear_crit_rating=468
-# gear_haste_rating=1362
+# gear_haste_rating=1368
 # gear_mastery_rating=554
 # gear_versatility_rating=93
-# gear_armor=3050
+# gear_armor=3054

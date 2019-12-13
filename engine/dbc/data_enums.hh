@@ -309,7 +309,8 @@ enum item_subclass_weapon
     ITEM_SUBCLASS_WEAPON_SPEAR                = 17,
     ITEM_SUBCLASS_WEAPON_CROSSBOW             = 18,
     ITEM_SUBCLASS_WEAPON_WAND                 = 19,
-    ITEM_SUBCLASS_WEAPON_FISHING_POLE         = 20
+    ITEM_SUBCLASS_WEAPON_FISHING_POLE         = 20,
+    ITEM_SUBCLASS_WEAPON_INVALID              = 31
 };
 
 enum item_subclass_armor
@@ -440,6 +441,9 @@ enum item_socket_color
   SOCKET_COLOR_LIFE                 = 16384,
   SOCKET_COLOR_WIND                 = 32768,
   SOCKET_COLOR_HOLY                 = 65536,
+  SOCKET_COLOR_RED_PUNCHCARD        = 131072,
+  SOCKET_COLOR_YELLOW_PUNCHCARD     = 262144,
+  SOCKET_COLOR_BLUE_PUNCHCARD       = 524288,
   SOCKET_COLOR_MAX,
   SOCKET_COLOR_RELIC                = SOCKET_COLOR_IRON | SOCKET_COLOR_BLOOD  | SOCKET_COLOR_SHADOW |
                                       SOCKET_COLOR_FEL  | SOCKET_COLOR_ARCANE | SOCKET_COLOR_FROST |
@@ -476,9 +480,9 @@ enum item_mod_type {
   ITEM_MOD_CRIT_MELEE_RATING        = 19,
   ITEM_MOD_CRIT_RANGED_RATING       = 20,
   ITEM_MOD_CRIT_SPELL_RATING        = 21,
-  ITEM_MOD_HIT_TAKEN_MELEE_RATING   = 22,
-  ITEM_MOD_HIT_TAKEN_RANGED_RATING  = 23,
-  ITEM_MOD_HIT_TAKEN_SPELL_RATING   = 24,
+  ITEM_MOD_CORRUPTION               = 22,
+  ITEM_MOD_CORRUPTION_RESISTANCE    = 23, // TODO: Guess
+  ITEM_MOD_UNSUSED                  = 24,
   ITEM_MOD_CRIT_TAKEN_MELEE_RATING  = 25,
   ITEM_MOD_CRIT_TAKEN_RANGED_RATING = 26,
   ITEM_MOD_CRIT_TAKEN_SPELL_RATING  = 27,
@@ -524,6 +528,11 @@ enum item_mod_type {
   ITEM_MOD_STRENGTH_AGILITY         = 72,
   ITEM_MOD_AGILITY_INTELLECT        = 73,
   ITEM_MOD_STRENGTH_INTELLECT       = 74,
+};
+
+enum item_cooldown_group {
+  ITEM_COOLDOWN_GROUP_NONE          = 0,
+  ITEM_COOLDOWN_GROUP_POTION        = 4,
 };
 
 enum rating_mod_type {

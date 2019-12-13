@@ -20,10 +20,11 @@ warlock_pet_t::warlock_pet_t(warlock_t* owner, const std::string& pet_name, pet_
 {
   owner_coeff.ap_from_sp = 0.5;
   owner_coeff.sp_from_sp = 1.0;
+  
   owner_coeff.health = 0.5;
 
-  callbacks_on_arise.push_back( [ owner ]() { owner->active_pets++; } );
-  callbacks_on_demise.push_back( [ owner ]( const player_t* ) { owner->active_pets--; } );
+  callbacks_on_arise.emplace_back([ owner ]() { owner->active_pets++; } );
+  callbacks_on_demise.emplace_back([ owner ]( const player_t* ) { owner->active_pets--; } );
 }
 
 warlock_t* warlock_pet_t::o()
@@ -46,7 +47,7 @@ void warlock_pet_t::create_buffs()
 
   buffs.demonic_consumption = make_buff(this, "demonic_consumption", find_spell(267972))
     ->set_default_value(find_spell(267972)->effectN(1).percent())
-    ->set_max_stack(200);
+    ->set_max_stack(1);
 
   // destro
   buffs.embers = make_buff(this, "embers", find_spell(264364))
@@ -124,13 +125,12 @@ double warlock_pet_t::resource_regen_per_second( resource_e r ) const
 {
   double reg = base_t::resource_regen_per_second( r );
 
-  if ( r == RESOURCE_ENERGY )
-  {
-    // TOCHECK As of 07-29-2018, warlock pets' energy regen scales off haste twice.
-    if ( o()->bugs )
-      reg /= cache.spell_haste();
-  }
-
+  /*
+  Felguard had a Haste scaling energy bug that was supposedly fixed once already. Real fix apparently went live 3-12-2019.
+  Preserving code for now in case of future issues.
+  if ( !o()->dbc.ptr && ( pet_type == PET_FELGUARD || pet_type == PET_SERVICE_FELGUARD ) )
+    reg /= cache.spell_haste();
+  */
   return reg;
 }
 
@@ -152,13 +152,17 @@ double warlock_pet_t::composite_player_multiplier(school_e school) const
 
   m *= 1.0 + buffs.grimoire_of_service->check_value();
 
+  //TOCHECK Increased by 25% in 8.1.
+  if ( pet_type == PET_WARLOCK_RANDOM )
+    m *= 1.25;
+
   return m;
 }
 
 warlock_simple_pet_t::warlock_simple_pet_t( warlock_t* owner, const std::string& pet_name, pet_e pt ) :
   warlock_pet_t( owner, pet_name, pt, true ), special_ability( nullptr )
 {
-  regen_type = REGEN_DISABLED;
+  resource_regeneration = regen_type::DISABLED;
 }
 
 timespan_t warlock_simple_pet_t::available() const
@@ -196,6 +200,11 @@ felhunter_pet_t::felhunter_pet_t(warlock_t* owner, const std::string& name) :
 void felhunter_pet_t::init_base_stats()
 {
   warlock_pet_t::init_base_stats();
+
+  //TOCHECK Increased by 15% in 8.1.
+  owner_coeff.ap_from_sp *= 1.15;
+  owner_coeff.sp_from_sp *= 1.15;
+
   melee_attack = new warlock_pet_melee_t(this);
 }
 
@@ -218,6 +227,10 @@ imp_pet_t::imp_pet_t( warlock_t* owner, const std::string& name ) :
   firebolt_cost( find_spell( 3110 )->cost( POWER_ENERGY ) )
 {
   action_list_str = "firebolt";
+
+  //TOCHECK Increased by 25% in 8.1.
+  owner_coeff.ap_from_sp *= 1.25;
+  owner_coeff.sp_from_sp *= 1.25;
 }
 
 action_t* imp_pet_t::create_action( const std::string& name, const std::string& options_str )
@@ -273,6 +286,10 @@ void succubus_pet_t::init_base_stats()
 {
   warlock_pet_t::init_base_stats();
 
+  //TOCHECK Increased by 15% in 8.1.
+  owner_coeff.ap_from_sp *= 1.15;
+  owner_coeff.sp_from_sp *= 1.15;
+
   main_hand_weapon.swing_time = timespan_t::from_seconds(3.0);
   melee_attack = new warlock_pet_melee_t(this);
 }
@@ -287,7 +304,10 @@ action_t* succubus_pet_t::create_action(const std::string& name, const std::stri
 struct consuming_shadows_t : public warlock_pet_spell_t
 {
   consuming_shadows_t(warlock_pet_t* p) : warlock_pet_spell_t(p, "Consuming Shadows")
-  { }
+  {
+    aoe = -1;
+    may_crit = false;
+  }
 };
 
 voidwalker_pet_t::voidwalker_pet_t( warlock_t* owner, const std::string& name ) :
@@ -299,6 +319,11 @@ voidwalker_pet_t::voidwalker_pet_t( warlock_t* owner, const std::string& name ) 
 void voidwalker_pet_t::init_base_stats()
 {
   warlock_pet_t::init_base_stats();
+
+  //TOCHECK Increased by 15% in 8.1.
+  owner_coeff.ap_from_sp *= 1.15;
+  owner_coeff.sp_from_sp *= 1.15;
+
   melee_attack = new warlock_pet_melee_t(this);
 }
 
@@ -525,7 +550,15 @@ void felguard_pet_t::init_base_stats()
 {
   warlock_pet_t::init_base_stats();
 
+  // Felguard is the only warlock pet to use an actual weapon.
+  main_hand_weapon.type = WEAPON_AXE_2H;
   melee_attack = new warlock_pet_melee_t(this);
+
+  //TOCHECK Increased by 15% in 8.1.
+  owner_coeff.ap_from_sp *= 1.15;
+  owner_coeff.sp_from_sp *= 1.15;
+
+  //TOCHECK Felguard has a hardcoded 10% multiplier for it's auto attack damage. Live as of 10-17-2018
   melee_attack->base_dd_multiplier *= 1.1;
   special_action = new axe_toss_t(this, "");
   if ( o()->talents.soul_strike )
@@ -619,9 +652,9 @@ struct fel_firebolt_t : public warlock_pet_spell_t
 };
 
 wild_imp_pet_t::wild_imp_pet_t( warlock_t* owner )
-  : warlock_pet_t( owner, "wild_imp", PET_WILD_IMP ), firebolt( nullptr ), power_siphon( false )
+  : warlock_pet_t( owner, "wild_imp", PET_WILD_IMP ), firebolt( nullptr ), power_siphon( false ), demonic_consumption( false )
 {
-  regen_type = REGEN_DISABLED;
+  resource_regeneration = regen_type::DISABLED;
 }
 
 void wild_imp_pet_t::create_actions()
@@ -642,6 +675,11 @@ void wild_imp_pet_t::init_base_stats()
 void wild_imp_pet_t::reschedule_firebolt()
 {
   if ( executing )
+  {
+    return;
+  }
+
+  if ( is_sleeping() )
   {
     return;
   }
@@ -686,7 +724,9 @@ void wild_imp_pet_t::finish_moving()
 void wild_imp_pet_t::arise()
 {
   warlock_pet_t::arise();
+
   power_siphon = false;
+  demonic_consumption = false;
   o()->buffs.wild_imps->increment();
 
   // Start casting fel firebolts
@@ -699,7 +739,8 @@ void wild_imp_pet_t::demise()
   warlock_pet_t::demise();
 
   o()->buffs.wild_imps->decrement();
-  if (!power_siphon)
+
+  if ( !power_siphon )
   {
     o()->buffs.demonic_core->trigger(1, buff_t::DEFAULT_VALUE(), o()->spec.demonic_core->effectN(1).percent());
     expansion::bfa::trigger_leyshocks_grand_compilation( STAT_HASTE_RATING, o() );
@@ -714,8 +755,6 @@ void wild_imp_pet_t::demise()
 
 struct dreadbite_t : public warlock_pet_melee_attack_t
 {
-  double t21_4pc_increase;
-
   dreadbite_t(warlock_pet_t* p) :
     warlock_pet_melee_attack_t("Dreadbite", p, p -> find_spell(205196))
   {
@@ -725,7 +764,6 @@ struct dreadbite_t : public warlock_pet_melee_attack_t
       aoe = -1;
       radius = 8;
     }
-    t21_4pc_increase = p->o()->sets->set(WARLOCK_DEMONOLOGY, T21, B4)->effectN(1).percent();
   }
 
   bool ready() override
@@ -739,9 +777,6 @@ struct dreadbite_t : public warlock_pet_melee_attack_t
   double action_multiplier() const override
   {
     double m = warlock_pet_melee_attack_t::action_multiplier();
-
-    if (p()->o()->sets->has_set_bonus(WARLOCK_DEMONOLOGY, T21, B4) && p()->bites_executed == 1)
-      m *= 1.0 + t21_4pc_increase;
 
     if (p()->o()->talents.dreadlash->ok())
     {
@@ -757,21 +792,16 @@ struct dreadbite_t : public warlock_pet_melee_attack_t
 
     p()->dreadbite_executes--;
   }
-
-  void impact(action_state_t* s) override
-  {
-    warlock_pet_melee_attack_t::impact(s);
-
-    p()->bites_executed++;
-  }
 };
 
 dreadstalker_t::dreadstalker_t(warlock_t* owner) :
   warlock_pet_t(owner, "dreadstalker", PET_DREADSTALKER)
 {
   action_list_str = "travel/dreadbite";
-  regen_type = REGEN_DISABLED;
+  resource_regeneration = regen_type::DISABLED;
   owner_coeff.ap_from_sp = 0.4;
+  //TOCHECK hotfix live as of 10-02-2018. https://us.battle.net/forums/en/wow/topic/20769527059
+  owner_coeff.ap_from_sp *= 1.15;
 }
 
 void dreadstalker_t::init_base_stats()
@@ -790,10 +820,6 @@ void dreadstalker_t::arise()
   o()->buffs.dreadstalkers->trigger();
 
   dreadbite_executes = 1;
-  bites_executed = 0;
-
-  if (o()->sets->has_set_bonus(WARLOCK_DEMONOLOGY, T21, B4))
-    t21_4pc_reset = false;
 }
 
 void dreadstalker_t::demise() {
@@ -874,13 +900,22 @@ struct demonfire_t : public warlock_pet_spell_t
     parse_options(options_str);
   }
 
+  double bonus_da( const action_state_t* s ) const override
+  {
+    double da = warlock_pet_spell_t::bonus_da( s );
+
+    da += p()->o()->azerite.baleful_invocation.value( 1 );
+
+    return da;
+  }
+
   double action_multiplier() const override
   {
     double m = warlock_pet_spell_t::action_multiplier();
 
     if (p()->buffs.demonic_consumption->check())
     {
-      m *= 1.0 + p()->buffs.demonic_consumption->check_stack_value();
+      m *= 1.0 + p()->buffs.demonic_consumption->check_value();
     }
 
     return m;
@@ -889,7 +924,7 @@ struct demonfire_t : public warlock_pet_spell_t
 
 demonic_tyrant_t::demonic_tyrant_t(warlock_t* owner, const std::string& name) :
   warlock_pet_t(owner, name, PET_DEMONIC_TYRANT, name != "demonic_tyrant") {
-  regen_type = REGEN_DISABLED;
+  resource_regeneration = regen_type::DISABLED;
   action_list_str += "/demonfire";
 }
 
@@ -1380,7 +1415,7 @@ infernal_t::infernal_t( warlock_t* owner, const std::string& name ) :
   warlock_pet_t( owner, name, PET_INFERNAL, name != "infernal" ),
   immolation( nullptr )
 {
-  regen_type = REGEN_DISABLED;
+  resource_regeneration = regen_type::DISABLED;
 }
 
 void infernal_t::init_base_stats()
@@ -1421,7 +1456,6 @@ void infernal_t::demise()
 
   buffs.embers->expire();
   immolation->expire();
-  o()->buffs.grimoire_of_supremacy->expire();
 }
 } // Namespace destruction ends
 

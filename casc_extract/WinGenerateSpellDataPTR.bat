@@ -1,14 +1,14 @@
-call py -3 casc_extract.py -m batch --cdn --ptr -o wow
-cd wow
+call py -3 casc_extract.py -m batch --cdn --ptr -o wow_ptr
+cd wow_ptr
 dir /b /a:D /O:-D>hi.txt
 set /p wowdir=<hi.txt
-set /p oldname=<hi.txt
-set wowdir=%wowdir:~6%
-ren %oldname% %wowdir%
 del hi.txt
 cd ..
 cd ..
 set curr=%cd%
 cd dbc_extract3
-call generate.bat ptr %wowdir% %curr%\casc_extract\wow
+robocopy "C:\Program Files (x86)\World of Warcraft\_ptr_\Cache\ADB\enUS" "%cd%\cache\ptr" DBCache.bin
+robocopy "C:\Program Files (x86)\Warcraft\_ptr_\Cache\ADB\enUS" "%cd%\cache\ptr" DBCache.bin
+robocopy "C:\World of Warcraft\_ptr_\Cache\ADB\enUS" "%cd%\cache\ptr" DBCache.bin
+call generate.bat ptr %wowdir% %curr%\casc_extract\wow_ptr
 pause

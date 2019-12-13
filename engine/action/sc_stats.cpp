@@ -3,6 +3,8 @@
 // Send questions to natehieter@gmail.com
 // ==========================================================================
 
+#include <memory>
+
 #include "simulationcraft.hpp"
 
 // stats_t::stats_t =========================================================
@@ -51,7 +53,7 @@ stats_t::stats_t( const std::string& n, player_t* p ) :
 
   if ( sim.report_details != 0 )
   {
-    timeline_amount = std::unique_ptr<sc_timeline_t>( new sc_timeline_t() );
+    timeline_amount = std::make_unique<sc_timeline_t>( );
   }
 }
 
@@ -129,13 +131,13 @@ full_result_e stats_t::translate_result( result_e result, block_result_e block_r
 
 void stats_t::add_result( double act_amount,
                           double tot_amount,
-                          dmg_e dmg_type,
+                          result_amount_type dmg_type,
                           result_e result,
                           block_result_e block_result,
                           player_t* /* target */ )
 {
   stats_results_t* r = nullptr;
-  if ( dmg_type == DMG_DIRECT || dmg_type == HEAL_DIRECT || dmg_type == ABSORB )
+  if ( dmg_type == result_amount_type::DMG_DIRECT || dmg_type == result_amount_type::HEAL_DIRECT || dmg_type == result_amount_type::ABSORB )
   {
     r = &( direct_results[ translate_result( result, block_result ) ] );
   }
@@ -386,11 +388,11 @@ void stats_t::analyze()
 stats_t::stats_results_t::stats_results_t() :
   actual_amount(),
   avg_actual_amount(),
+  count(),
   total_amount(),
   fight_actual_amount(),
   fight_total_amount(),
   overkill_pct(),
-  count(),
   pct( 0 ),
   iteration_count( 0 ),
   iteration_actual_amount( 0 ),

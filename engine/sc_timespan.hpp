@@ -250,30 +250,57 @@ namespace timespan_adl_barrier
       return timespan_t(t);
     }
 
-    static constexpr timespan_t zero()
+    static timespan_t zero()
     {
-      return timespan_t();
+      static constexpr timespan_t cached_zero = timespan_t();
+      return cached_zero;
     }
-    static constexpr timespan_t max()
+    static timespan_t max()
     {
-      return timespan_t(std::numeric_limits<time_t>::max());
+      static constexpr timespan_t cached_max = timespan_t( std::numeric_limits<time_t>::max() );
+      return cached_max;
     }
-    static constexpr timespan_t min()
+    static timespan_t min()
     {
-      return std::is_floating_point<time_t>::value ? timespan_t(-std::numeric_limits<time_t>::max()) :
-          timespan_t(std::numeric_limits<time_t>::min());
+      static constexpr timespan_t cached_min = std::is_floating_point<time_t>::value
+                                                   ? timespan_t( -std::numeric_limits<time_t>::max() )
+                                                   : timespan_t( std::numeric_limits<time_t>::min() );
+      return cached_min;
     }
   };
 
   inline std::ostream& operator<<(std::ostream &os, const timespan_t& x)
   {
-    fmt::print(os, "{:d}:{:02d}.{:03d}", (int64_t)x.total_minutes(),
-                                         (int64_t)x.total_seconds() % 60,
-                                         (int64_t)x.total_millis() % 1000 );
+    fmt::print(os, "{:.3f}", x.total_seconds() );
     return os;
   }
 } // namespace timespan_adl_barrier
 
 using timespan_adl_barrier::timespan_t;
+
+constexpr timespan_t operator"" _ms( unsigned long long time )
+{
+  return timespan_t::from_millis( time );
+}
+
+constexpr timespan_t operator"" _s( unsigned long long time )
+{
+  return timespan_t::from_seconds( time );
+}
+
+constexpr timespan_t operator"" _s( long double time )
+{
+  return timespan_t::from_seconds( time );
+}
+
+constexpr timespan_t operator"" _min( unsigned long long time )
+{
+  return timespan_t::from_minutes( time );
+}
+
+constexpr timespan_t operator"" _min( long double time )
+{
+  return timespan_t::from_minutes( time );
+}
 
 #endif // SC_TIMESPAN_HPP

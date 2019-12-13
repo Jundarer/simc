@@ -523,7 +523,7 @@ void pet_spawner_t<T, O>::merge( base_actor_spawner_t* other )
   }
 
   auto n_shared = std::min( n_pets(), o -> n_pets() );
-  int n_extra = as<int>( o -> n_pets() ) - n_pets();
+  int n_extra = as<int>( o -> n_pets() ) - as<int>( n_pets() );
 
   // Merge shared pets .. note that the pet indeices may not be the same, but the dynamic pets
   // don't really care about that. We can presume that between the threads, the "natural order" of
@@ -570,11 +570,11 @@ void pet_spawner_t<T, O>::create_persistent_actors()
 }
 
 template <typename T, typename O>
-expr_t* pet_spawner_t<T, O>::create_expression( const arv::array_view<std::string>& expr )
+std::unique_ptr<expr_t> pet_spawner_t<T, O>::create_expression( const arv::array_view<std::string>& expr )
 {
   if ( expr.size() == 0 )
   {
-    return nullptr;
+    return {};
   }
 
   sim_t* sim = m_owner -> sim;
@@ -619,7 +619,7 @@ expr_t* pet_spawner_t<T, O>::create_expression( const arv::array_view<std::strin
     return it -> second( expr );
   }
 
-  return nullptr;
+  return {};
 }
 
 template <typename T, typename O>

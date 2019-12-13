@@ -17,21 +17,21 @@ struct proc_parse_opt_t
 
 const proc_parse_opt_t __proc_opts[] =
 {
-  { "genericpell", PF_NONE_SPELL                                               },
-  { "spell",       PF_MAGIC_SPELL | PF_PERIODIC                                },
-  { "directspell", PF_MAGIC_SPELL                                              },
-  { "periodic",    PF_PERIODIC                                                 },
-  { "genericheal", PF_NONE_HEAL                                                },
-  { "heal",        PF_MAGIC_HEAL | PF_PERIODIC                                 },
-  { "directheal",  PF_MAGIC_HEAL                                               },
-  { "attack",      PF_MELEE | PF_MELEE_ABILITY | PF_RANGED | PF_RANGED_ABILITY },
-  { "wattack",     PF_MELEE | PF_RANGED                                        },
-  { "sattack",     PF_MELEE_ABILITY | PF_RANGED_ABILITY                        },
-  { "melee",       PF_MELEE | PF_MELEE_ABILITY                                 },
-  { "wmelee",      PF_MELEE                                                    },
-  { "smelee",      PF_MELEE_ABILITY                                            },
-  { "wranged",     PF_RANGED                                                   },
-  { "sranged",     PF_RANGED_ABILITY                                           },
+  { "genericspell", PF_NONE_SPELL                                               },
+  { "spell",        PF_MAGIC_SPELL | PF_PERIODIC                                },
+  { "directspell",  PF_MAGIC_SPELL                                              },
+  { "periodic",     PF_PERIODIC                                                 },
+  { "genericheal",  PF_NONE_HEAL                                                },
+  { "heal",         PF_MAGIC_HEAL | PF_PERIODIC                                 },
+  { "directheal",   PF_MAGIC_HEAL                                               },
+  { "attack",       PF_MELEE | PF_MELEE_ABILITY | PF_RANGED | PF_RANGED_ABILITY },
+  { "wattack",      PF_MELEE | PF_RANGED                                        },
+  { "sattack",      PF_MELEE_ABILITY | PF_RANGED_ABILITY                        },
+  { "melee",        PF_MELEE | PF_MELEE_ABILITY                                 },
+  { "wmelee",       PF_MELEE                                                    },
+  { "smelee",       PF_MELEE_ABILITY                                            },
+  { "wranged",      PF_RANGED                                                   },
+  { "sranged",      PF_RANGED_ABILITY                                           },
 };
 
 const proc_parse_opt_t __proc2_opts[] =
@@ -161,6 +161,7 @@ void special_effect_t::reset()
   ppm_ = std::numeric_limits<double>::min();
   rppm_scale_ = RPPM_NONE;
   rppm_modifier_ = -1.0;
+  rppm_blp_ = real_ppm_t::BLP_ENABLED;
 
   // Must match buff creator defaults for now
   duration_ = timespan_t::min();
@@ -193,6 +194,8 @@ void special_effect_t::reset()
 
   action_disabled = false;
   buff_disabled = false;
+
+  enchant_data = nullptr;
 }
 
 const spell_data_t* special_effect_t::driver() const
@@ -1082,6 +1085,10 @@ void special_effect::parse_special_effect_encoding( special_effect_t& effect,
       else
         effect.rppm_scale_ = RPPM_NONE;
     }
+    else if ( util::str_compare_ci( t.name, "noblp" ) )
+    {
+      effect.rppm_blp_ = real_ppm_t::BLP_DISABLED;
+    }
     else if ( t.name == "duration" || t.name == "dur" )
     {
       effect.duration_ = timespan_t::from_seconds( t.value );
@@ -1246,7 +1253,10 @@ void dbc_proc_callback_t::initialize()
   // Initialize proc chance triggers. Note that this code only chooses one, and
   // prioritizes RPPM > PPM > proc chance.
   if ( effect.rppm() > 0 && effect.rppm_scale() != RPPM_DISABLE )
+  {
     rppm = listener -> get_rppm( effect.name(), effect.rppm(), effect.rppm_modifier(), effect.rppm_scale() );
+    rppm->set_blp_state( static_cast<real_ppm_t::blp>( effect.rppm_blp_ ) );
+  }
   else if ( effect.ppm() > 0 )
     ppm = effect.ppm();
   else if ( effect.proc_chance() != 0 )
@@ -1339,18 +1349,19 @@ int special_effect_t::cooldown_group() const
     return 0;
   }
 
+  // New-style On-Use item spells may use a special cooldown category to signal the shared cooldown
+  if ( driver() -> category() == ITEM_TRINKET_BURST_CATEGORY )
+  {
+    return driver() -> category();
+  }
+
+  // For everything else, look at the item effects for a cooldown group
   for ( size_t i = 0; i < MAX_ITEM_EFFECT; ++i )
   {
     if ( item -> parsed.data.cooldown_group[ i ] > 0 )
     {
       return item -> parsed.data.cooldown_group[ i ];
     }
-  }
-
-  // On-Use trinkets use a special cooldown category to signal the shared cooldown
-  if ( driver() -> category() == ITEM_TRINKET_BURST_CATEGORY )
-  {
-    return driver() -> category();
   }
 
   return 0;
@@ -1363,6 +1374,14 @@ timespan_t special_effect_t::cooldown_group_duration() const
     return timespan_t::zero();
   }
 
+  // New-style On-Use items when using a special cooldown category signal the shared cooldown
+  // duration in the spell itself
+  if ( driver() -> category() == ITEM_TRINKET_BURST_CATEGORY )
+  {
+    return driver() -> category_cooldown();
+  }
+
+  // For everything else, look at the item effects with a cooldown group
   for ( size_t i = 0; i < MAX_ITEM_EFFECT; ++i )
   {
     if ( item -> parsed.data.cooldown_group[ i ] > 0 )
@@ -1371,7 +1390,7 @@ timespan_t special_effect_t::cooldown_group_duration() const
     }
   }
 
-  return driver() -> category_cooldown();
+  return 0_ms;
 }
 
 const item_t dbc_proc_callback_t::default_item_ = item_t();

@@ -2,7 +2,7 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 import optparse, sys, os
 
-import build_cfg, casc
+import build_cfg, casc, keyfile
 import binascii
 
 parser = optparse.OptionParser( usage = 'Usage: %prog -d wow_install_dir [options] file_path ...')
@@ -19,18 +19,30 @@ parser.add_option( '-d', '--datadir', dest = 'data_dir', type = 'string',
 		help = 'World of Warcraft install directory [only needed if --cdn is not set]' )
 parser.add_option( '-o', '--output', type = 'string', dest = 'output',
 		help = "Output directory for dbc mode, output file name for unpack mode" )
+parser.add_option( '-z', '--region', type = 'string', dest = 'region', default = 'us',
+		help = "Region for CDN downloads [default us]")
+parser.add_option( '-k', '--keydb', type = 'string', dest = 'key_file',
+		help = "A JSON key database file [default keyfile]", default = 'keyfile')
 parser.add_option( '-x', '--cache', type = 'string', dest = 'cache', default = 'cache', help = 'Cache directory [default cache]' )
 parser.add_option( '--ptr', action = 'store_true', dest = 'ptr', default = False, help = 'Download PTR files [default no, only used for --cdn]' )
 parser.add_option( '--beta', action = 'store_true', dest = 'beta', default = False, help = 'Download Beta files [default no, only used for --cdn]' )
 parser.add_option( '--alpha', action = 'store_true', dest = 'alpha', default = False, help = 'Download Alpha files [default no, only used for --cdn]' )
+parser.add_option( '--classic', action = 'store_true', dest = 'classic', default = False, help = 'Download Classic files [default no, only used for --cdn]' )
 parser.add_option( '--locale', action = 'store', dest = 'locale', default = 'en_US', help = 'Extraction locale [default en_US, only used for --cdn]' )
+parser.add_option( '--ribbit', action = 'store_true', dest = 'ribbit', default = False, help = 'Use Ribbit for configuration information')
 
 if __name__ == '__main__':
 	(opts, args) = parser.parse_args()
 	opts.parser = parser
 
+	if not keyfile.initialize(opts):
+		sys.exit(1)
+
 	if not opts.mode and opts.online:
-		cdn = casc.CDNIndex(opts)
+		if opts.ribbit:
+			cdn = casc.RibbitIndex(opts)
+		else:
+			cdn = casc.CDNIndex(opts)
 		cdn.CheckVersion()
 		sys.exit(0)
 	#elif opts.mode == 'fieldlist':
@@ -72,10 +84,10 @@ if __name__ == '__main__':
 			if not root.open():
 				sys.exit(1)
 
-			for file_hash, file_name in fname_db.items():
+			for file_data_id, file_name in fname_db.items():
 				extract_data = None
 
-				file_md5s = root.GetFileHashMD5(file_hash)
+				file_md5s = root.GetFileDataIdMD5(file_data_id)
 				file_keys = []
 				for md5s in file_md5s:
 					file_keys = encoding.GetFileKeys(md5s)
@@ -90,7 +102,7 @@ if __name__ == '__main__':
 				if not extract_data:
 					continue
 
-				print('Extracting %s ...' % file_name)
+				print('Extracting %s (id=%d) ...' % (file_name, file_data_id))
 
 				if not blte.extract_file(*extract_data):
 					sys.exit(1)
@@ -108,9 +120,10 @@ if __name__ == '__main__':
 				sys.exit(1)
 
 			output_path = os.path.join(opts.output, cdn.build())
-			for file_hash, file_name in fname_db.items():
-				file_md5s = root.GetFileHashMD5(file_hash)
+			for file_data_id, file_name in fname_db.items():
+				file_md5s = root.GetFileDataIdMD5(file_data_id)
 				if not file_md5s:
+					print('No entry found for %s (id=%s)' % (file_name, file_data_id))
 					continue
 
 				if len(file_md5s) > 1:
@@ -119,12 +132,13 @@ if __name__ == '__main__':
 				file_keys = encoding.GetFileKeys(file_md5s[0])
 
 				if len(file_keys) == 0:
+					print('No keys found for %s (%s)' % (file_name, binascii.hexlify(file_md5s[0]).decode('utf-8')))
 					continue
 
 				if len(file_keys) > 1:
 					print('More than one key found for %s, selecting first one ...' % file_name)
 
-				print('Extracting %s ...' % file_name)
+				print('Extracting %s (id=%d) ...' % (file_name, file_data_id))
 
 				data = cdn.fetch_file(file_keys[0])
 				if not data:

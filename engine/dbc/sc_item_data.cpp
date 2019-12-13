@@ -37,7 +37,6 @@ namespace {
   };
 
   item_data_t nil_item_data;
-  random_suffix_data_t nil_rsd;
   item_enchantment_data_t nil_ied;
   gem_property_data_t nil_gpd;
   dbc_index_t<item_enchantment_data_t, id_member_policy> item_enchantment_data_index;
@@ -277,80 +276,6 @@ std::vector<const item_bonus_entry_t*> dbc_t::item_bonus( unsigned bonus_id ) co
   }
 
   return entries;
-}
-
-std::vector<const item_upgrade_t*> dbc_t::item_upgrades( unsigned item_id ) const
-{
-#if SC_USE_PTR
-  const item_upgrade_rule_t* upgrade_data = ptr ? __ptr_item_upgrade_rule_data : __item_upgrade_rule_data;
-  const item_upgrade_t* upgrade_data2 = ptr ? __ptr_upgrade_rule_data : __upgrade_rule_data,
-         * upgrade_data3 = upgrade_data2;
-#else
-  const item_upgrade_rule_t* upgrade_data = __item_upgrade_rule_data;
-  const item_upgrade_t* upgrade_data2 = __upgrade_rule_data, * upgrade_data3 = upgrade_data2;
-#endif
-
-  std::vector<const item_upgrade_t*> data;
-  unsigned upgrade_group = 0;
-
-  // Find the correct upgrade rule, so we can figure out the base upgrade id
-  while ( upgrade_data -> id != 0 )
-  {
-    if ( upgrade_data -> item_id == item_id )
-    {
-      break;
-    }
-
-    upgrade_data++;
-  }
-
-  // Find the upgrade group from the upgrade id
-  while ( upgrade_data2 -> id != 0 )
-  {
-    if ( upgrade_data2 -> id == upgrade_data -> upgrade_id )
-    {
-      upgrade_group = upgrade_data2 -> upgrade_group;
-      break;
-    }
-
-    upgrade_data2++;
-  }
-
-  // Collect all upgrade levels into the vector in the upgrade group
-  while ( upgrade_data3 -> id != 0 )
-  {
-    if ( upgrade_data3 -> upgrade_group == upgrade_group )
-    {
-      data.push_back( upgrade_data3 );
-    }
-
-    upgrade_data3++;
-  }
-
-  // Sort based on the previous upgrade id. The base will have 0, and subsequent levels the previous
-  // level's id. Results in a 0->N ilevel upgrades in however many steps in the vector.
-  range::sort( data, []( const item_upgrade_t* l, const item_upgrade_t* r )
-      { return l -> previous_upgrade_id < r -> previous_upgrade_id; } );
-
-  return data;
-}
-
-const random_suffix_data_t& dbc_t::random_suffix( unsigned suffix_id ) const
-{
-#if SC_USE_PTR
-  const random_suffix_data_t* p = ptr ? __ptr_rand_suffix_data : __rand_suffix_data;
-#else
-  const random_suffix_data_t* p = __rand_suffix_data;
-#endif
-
-  do
-  {
-    if ( p -> id == suffix_id )
-      return *p;
-  }
-  while ( ( p++ ) -> id );
-
-  return nil_rsd;
 }
 
 const item_enchantment_data_t& dbc_t::item_enchantment( unsigned enchant_id ) const
@@ -942,16 +867,16 @@ int item_database::scaled_stat( const item_t& item, const dbc_t& dbc, size_t idx
     double v_socket_penalty = item.parsed.data.stat_socket_mul[ idx ] *
                               dbc.item_socket_cost( item.base_item_level() );
 
-    int v_raw = item.parsed.data.stat_alloc[ idx ] * item_budget * 0.0001 - v_socket_penalty + 0.5;
+    int v_raw = static_cast<int>(item.parsed.data.stat_alloc[ idx ] * item_budget * 0.0001 - v_socket_penalty + 0.5);
     auto stat_type = static_cast<item_mod_type>( item.parsed.data.stat_type_e[ idx ] );
 
     if ( util::is_combat_rating( stat_type ) )
     {
-      v_raw = apply_combat_rating_multiplier( item, as<double>( v_raw ) );
+      v_raw = static_cast<int>(apply_combat_rating_multiplier( item, as<double>( v_raw ) ));
     }
     else if ( stat_type == ITEM_MOD_STAMINA )
     {
-      v_raw = apply_stamina_multiplier( item, as<double>( v_raw ) );
+      v_raw = static_cast<int>(apply_stamina_multiplier( item, as<double>( v_raw ) ));
     }
 
     return v_raw;
@@ -1232,7 +1157,7 @@ bool item_database::parse_item_spell_enchant( item_t& item,
                es -> effectN( j + 1 ).subtype() == A_MOD_STAT &&
                es -> effectN( j + 1 ).misc_value1() == -1 )
           {
-            stats.push_back( stat_pair_t( STAT_ALL, static_cast<int>(es -> effectN( j + 1 ).average( item.player ) )) );
+            stats.emplace_back( STAT_ALL, static_cast<int>(es -> effectN( j + 1 ).average( item.player ) ) );
             break;
           }
         }
@@ -1349,30 +1274,6 @@ bool item_database::download_item( item_t& item )
     item.source_str = "Local";
 
   return ret;
-}
-
-// item_database::upgrade_ilevel ============================================
-
-// TODO: DBC Based upgrading system would be safer, this works for now, probably
-unsigned item_database::upgrade_ilevel( const item_t& item, unsigned upgrade_level )
-{
-  if ( upgrade_level == 0 )
-  {
-    return 0;
-  }
-
-  std::vector<const item_upgrade_t*> upgrades = item.player->dbc.item_upgrades( item.parsed.data.id );
-  if ( upgrades.size() < upgrade_level )
-  {
-    if ( item.player -> sim -> debug )
-    {
-      item.player -> sim -> out_debug.printf( "%s %s too high upgrade level specified, %u given, max is %u",
-          item.player -> name(), item.name(), upgrade_level, upgrades.size() );
-    }
-    return 0;
-  }
-
-  return upgrades[ upgrade_level ] -> ilevel_delta;
 }
 
 double item_database::item_budget( const player_t* player, unsigned ilevel )
@@ -1619,11 +1520,11 @@ static std::vector< std::tuple< item_mod_type, double, double > > get_bonus_id_s
   {
     if ( entries[ i ] -> type == ITEM_BONUS_MOD )
     {
-      data.push_back( std::make_tuple(
+      data.emplace_back(
             static_cast<item_mod_type>( entries[ i ] -> value_1 ),
             entries[ i ] -> value_2 / total,
             entries[ i ] -> value_2 / 10000.0
-      ) );
+      );
     }
   }
 

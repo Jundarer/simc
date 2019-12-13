@@ -33,7 +33,7 @@ struct item_t;
 
 const unsigned NUM_SPELL_FLAGS = 14;
 const unsigned NUM_CLASS_FAMILY_FLAGS = 4;
-#define SC_USE_PTR 0
+#define SC_USE_PTR 1
 
 struct stat_data_t
 {
@@ -92,7 +92,7 @@ const item_child_equipment_t* child_equipments( bool ptr );
 std::size_t        n_item_enchantments( bool ptr );
 const gem_property_data_t* gem_properties( bool ptr );
 specialization_e translate_spec_str   ( player_e ptype, const std::string& spec_str );
-std::string specialization_string     ( specialization_e spec );
+const char* specialization_string     ( specialization_e spec );
 double fmt_value( double v, effect_type_t type, effect_subtype_t sub_type );
 bool valid_gem_color( unsigned color );
 double stat_data_to_attribute( const stat_data_t&, attribute_e);
@@ -623,6 +623,7 @@ public:
   unsigned         _targeting_1;     // 25 Targeting related field 1
   unsigned         _targeting_2;     // 26 Targeting related field 2
   double           _m_value;         // 27 Misc multiplier used for some spells(?)
+  double           _pvp_coeff;       // 28 PvP Coefficient
 
   // Pointers for runtime linking
   spell_data_t* _spell;
@@ -718,6 +719,9 @@ public:
 
   double ap_coeff() const
   { return _ap_coeff; }
+
+  double pvp_coeff() const
+  { return _pvp_coeff; }
 
   timespan_t period() const
   { return timespan_t::from_millis( _amplitude ); }
@@ -870,17 +874,19 @@ public:
   unsigned    _stance_mask;        // 38 Stance mask (used only for druid form restrictions?)
   // SpellMechanic.db2
   unsigned    _mechanic;           // 39
+  // Azerite stuff
   unsigned    _power_id;           // 40 Azerite power id
+  unsigned    _essence_id;         // 41 Azerite essence id
   // Textual data
-  const char* _desc;               // 41 Spell.dbc description stringblock
-  const char* _tooltip;            // 42 Spell.dbc tooltip stringblock
+  const char* _desc;               // 42 Spell.dbc description stringblock
+  const char* _tooltip;            // 43 Spell.dbc tooltip stringblock
   // SpellDescriptionVariables.dbc
-  const char* _desc_vars;          // 43 Spell description variable stringblock, if present
+  const char* _desc_vars;          // 44 Spell description variable stringblock, if present
   // SpellIcon.dbc
-  const char* _rank_str;           // 44
+  const char* _rank_str;           // 45
 
-  unsigned    _req_max_level;      // 45
-  unsigned    _dmg_class;          // 46 SpellCategories.db2 classification for the spell
+  unsigned    _req_max_level;      // 46
+  unsigned    _dmg_class;          // 47 SpellCategories.db2 classification for the spell
 
   // Pointers for runtime linking
   std::vector<const spelleffect_data_t*>* _effects;
@@ -888,6 +894,15 @@ public:
   std::vector<spell_data_t*>* _driver; // The triggered spell's driver(s)
   std::vector<const spelllabel_data_t*>* _labels; // Applied (known) labels to the spell
   const hotfix::client_hotfix_entry_t* _hotfix_entry; // First hotfix entry in the hotfix table, if available
+
+  unsigned equipped_class() const
+  { return _equipped_class; }
+
+  unsigned equipped_invtype_mask() const
+  { return _equipped_invtype_mask; }
+
+  item_class equipped_subclass_mask() const
+  { return static_cast<item_class>( _equipped_subclass_mask ); }
 
   // Direct member access functions
   unsigned category() const
@@ -997,6 +1012,9 @@ public:
 
   unsigned power_id() const
   { return _power_id; }
+
+  unsigned essence_id() const
+  { return _essence_id; }
 
   // Helper functions
   size_t effect_count() const
@@ -1504,7 +1522,7 @@ public:
   double health_per_stamina( unsigned level ) const;
   double item_socket_cost( unsigned ilevel ) const;
   double armor_mitigation_constant( unsigned level ) const;
-  double npc_armor_mitigation_constant( unsigned level ) const;
+  double npc_armor_value( unsigned level ) const;
 
   double combat_rating( unsigned combat_rating_id, unsigned level ) const;
 
@@ -1517,8 +1535,6 @@ public:
   std::vector<const rppm_modifier_t*> real_ppm_modifiers( unsigned ) const;
   unsigned real_ppm_scale( unsigned ) const;
   double real_ppm_modifier( unsigned spell_id, player_t* player, unsigned item_level = 0 ) const;
-
-  std::vector<const item_upgrade_t*> item_upgrades(unsigned ) const;
 private:
   template <typename T>
   const T* find_by_id( unsigned id ) const
@@ -1545,7 +1561,6 @@ public:
   { return find_by_id<talent_data_t>( talent_id ); }
 
   const item_data_t*             item( unsigned item_id ) const;
-  const random_suffix_data_t&    random_suffix( unsigned suffix_id ) const;
   const item_enchantment_data_t& item_enchantment( unsigned enchant_id ) const;
   const gem_property_data_t&     gem_property( unsigned gem_id ) const;
 

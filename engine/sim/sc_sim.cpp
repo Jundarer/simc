@@ -319,19 +319,19 @@ bool parse_talent_format( sim_t*             sim,
 
   if ( util::str_compare_ci( value, "unchanged" ) )
   {
-    sim -> talent_format = TALENT_FORMAT_UNCHANGED;
+    sim -> talent_input_format = talent_format::UNCHANGED;
   }
   else if ( util::str_compare_ci( value, "armory" ) )
   {
-    sim -> talent_format = TALENT_FORMAT_ARMORY;
+    sim -> talent_input_format = talent_format::ARMORY;
   }
   else if ( util::str_compare_ci( value, "wowhead" ) )
   {
-    sim -> talent_format = TALENT_FORMAT_WOWHEAD;
+    sim -> talent_input_format = talent_format::WOWHEAD;
   }
   else if ( util::str_compare_ci( value, "numbers" ) || util::str_compare_ci( value, "default" ) )
   {
-    sim -> talent_format = TALENT_FORMAT_NUMBERS;
+    sim -> talent_input_format = talent_format::NUMBERS;
   }
 
   return true;
@@ -344,10 +344,13 @@ class names_and_options_t
 {
 private:
   static bool is_valid_region( const std::string& s )
-  { return s.size() == 2; }
+  {
+    static const std::vector<std::string> REGIONS { "us", "eu", "kr", "tw", "cn" };
+    return s.size() == 2 && range::find( REGIONS, s ) != REGIONS.end();
+  }
 
 public:
-  typedef std::runtime_error error;
+  using error = std::runtime_error;
   struct option_error : public error {
     explicit option_error(const std::string& _Message)
       : runtime_error(_Message)
@@ -401,6 +404,8 @@ public:
       if ( names.size() > 2 )
       {
         region = names[ 0 ];
+        // Lowercase regions, always
+        std::transform( region.begin(), region.end(), region.begin(), tolower );
         server = names[ 1 ];
         names.erase( names.begin(), names.begin() + 2 );
       }
@@ -411,7 +416,8 @@ public:
     }
     if (!is_valid_region( region ))
     {
-      throw std::invalid_argument(fmt::format("Invalid region '{}'.", region));
+      throw std::invalid_argument(
+          fmt::format( "Invalid region '{}', available regions are: us, eu, kr, tw, cn.", region ) );
     }
 
     if ( server.empty() )
@@ -465,18 +471,18 @@ bool parse_armory( sim_t*             sim,
 
       player_t* p;
       try
-        {
+      {
         if ( name == "local_json" )
-          p = bcp_api::from_local_json( sim, player_name, stuff.server, description );
+          p = bcp_api::from_local_json( sim, player_name, value, description );
         else
           p = bcp_api::download_player( sim, stuff.region, stuff.server,
-                                        player_name, description, stuff.cache );
+              player_name, description, stuff.cache );
 
         sim -> active_player = p;
         if ( ! p )
           throw std::runtime_error("Could not download player.");
-        }
-      catch (const std::exception& e )
+      }
+      catch (const std::exception& )
       {
         std::throw_with_nested(std::runtime_error("BCP API"));
       }
@@ -546,7 +552,7 @@ bool parse_fight_style( sim_t*             sim,
 {
   static std::vector<std::string> FIGHT_STYLES {
     "Patchwerk", "Ultraxion", "CleaveAdd", "HelterSkelter", "LightMovement", "HeavyMovement",
-    "HecticAddCleave", "Beastlord", "CastingPatchwerk"
+    "HecticAddCleave", "Beastlord", "CastingPatchwerk", "DungeonSlice"
   };
 
   auto it = range::find_if( FIGHT_STYLES, [ &value ]( const std::string& n ) {
@@ -657,7 +663,7 @@ bool parse_spell_query( sim_t*             sim,
     std::string lvl_offset_str = value.substr( lvl_offset + 1 );
     int sq_lvl = std::stoi( lvl_offset_str );
     if ( sq_lvl < 1 )
-      return 0;
+      return false;
 
     if ( sq_lvl > MAX_ILEVEL )
     {
@@ -704,7 +710,7 @@ bool parse_item_sources( sim_t*             sim,
     {
       if ( util::str_compare_ci( sources[ j ], default_item_db_sources[ i ] ) )
       {
-        sim -> item_db_sources.push_back( default_item_db_sources[ i ] );
+        sim -> item_db_sources.emplace_back(default_item_db_sources[ i ] );
         break;
       }
     }
@@ -797,6 +803,7 @@ bool parse_maximize_reporting( sim_t*             sim,
     sim -> report_pets_separately = true;
     sim -> report_precision = 4;
     sim -> buff_uptime_timeline = true;
+    sim -> buff_stack_uptime_timeline = true;
   }
 
   return true;
@@ -834,13 +841,13 @@ struct proxy_cast_check_t : public event_t
     uses( u ), _override( o ), start_time( st ), cooldown( cd ), duration( d )
   {
   }
-  virtual const char* name() const override
+  const char* name() const override
   { return "proxy_cast_check"; }
   virtual bool proxy_check() = 0;
   virtual void proxy_execute() = 0;
   virtual proxy_cast_check_t* proxy_schedule( timespan_t interval ) = 0;
 
-  virtual void execute() override
+  void execute() override
   {
     timespan_t interval = timespan_t::from_seconds( 0.25 );
 
@@ -884,9 +891,9 @@ struct sim_end_event_t : event_t
     event_t( s, end_time )
   {
   }
-  virtual const char* name() const override
+  const char* name() const override
   { return "sim_end_expected_time"; }
-  virtual void execute() override
+  void execute() override
   {
     sim().cancel_iteration();
   }
@@ -923,9 +930,9 @@ struct resource_timeline_collect_event_t : public event_t
     event_t( s, timespan_t::from_seconds( 1 ) )
   {
   }
-  virtual const char* name() const override
+  const char* name() const override
   { return "resource_timeline_collect_event_t"; }
-  virtual void execute() override
+  void execute() override
   {
     if ( sim().iterations == 1 || sim().current_iteration > 0 )
     {
@@ -979,10 +986,10 @@ struct regen_event_t : public event_t
     }
   }
 
-  virtual const char* name() const override
+  const char* name() const override
   { return "Regen Event"; }
 
-  virtual void execute() override
+  void execute() override
   {
     if ( ! sim().single_actor_batch )
     {
@@ -991,7 +998,7 @@ struct regen_event_t : public event_t
       {
         player_t* p = sim().player_non_sleeping_list[ i ];
         if ( p -> primary_resource() == RESOURCE_NONE ) continue;
-        if ( p -> regen_type != REGEN_STATIC ) continue;
+        if ( p ->resource_regeneration !=  regen_type::STATIC ) continue;
 
         p -> regen( sim().regen_periodicity );
       }
@@ -999,13 +1006,13 @@ struct regen_event_t : public event_t
     else
     {
       auto p = sim().player_no_pet_list[ sim().current_index ];
-      if ( p && p -> primary_resource() != RESOURCE_NONE && p -> regen_type == REGEN_STATIC )
+      if ( p && p -> primary_resource() != RESOURCE_NONE && p ->resource_regeneration ==  regen_type::STATIC )
       {
         p -> regen( sim().regen_periodicity );
         for ( auto pet : p -> pet_list )
         {
           if ( ! pet -> is_sleeping() && p -> primary_resource() != RESOURCE_NONE &&
-            p -> regen_type == REGEN_STATIC )
+            p ->resource_regeneration ==  regen_type::STATIC )
           {
             pet -> regen( sim().regen_periodicity );
           }
@@ -1017,11 +1024,12 @@ struct regen_event_t : public event_t
   }
 };
 
+#ifndef SC_NO_NETWORKING
 /// List of files from which to look for Blizzard API key
 std::vector<std::string> get_api_key_locations()
 {
   std::vector<std::string> key_locations;
-  key_locations.push_back( "./apikey.txt" );
+  key_locations.emplace_back("./apikey.txt" );
 
   // unix home
   if ( char* home_path = getenv( "HOME" ) )
@@ -1050,7 +1058,7 @@ std::vector<std::string> get_api_key_locations()
 bool validate_api_key( const std::string& key )
 {
   // no better check for now than to measure its length.
-  return key.size() == 32;
+  return key.size() == 65;
 }
 
 /**
@@ -1083,15 +1091,16 @@ std::string get_api_key()
     }
     else
     {
-      std::cerr << "Blizzard API Key from file '" << filename << "' was not properly entered. (Size != 32)" << std::endl;
+      std::cerr << "Blizzard API credentials from file '" << filename << "' were not properly entered. (Size != 65)" << std::endl;
     }
   }
 
-#if defined(SC_DEFAULT_APIKEY)
+#if defined( SC_DEFAULT_APIKEY )
   return std::string(SC_DEFAULT_APIKEY);
-#endif
+#endif /* SC_DEFAULT_APIKEY */
   return std::string();
 }
+#endif /* SC_NO_NETWORKING */
 
 /// Setup a periodic check for Bloodlust
 struct bloodlust_check_t : public event_t
@@ -1101,10 +1110,10 @@ struct bloodlust_check_t : public event_t
    {
    }
 
-   virtual const char* name() const override
+   const char* name() const override
    { return "Bloodlust Check"; }
 
-   virtual void execute() override
+   void execute() override
    {
      sim_t& sim = this -> sim();
      player_t* t = sim.target;
@@ -1293,12 +1302,13 @@ sim_t::sim_t() :
   out_log( *this, &std::cout, sim_ostream_t::no_close() ),
   out_debug(*this, &std::cout, sim_ostream_t::no_close() ),
   debug( false ),
+  strict_parsing( false ),
   max_time( timespan_t::zero() ),
   expected_iteration_time( timespan_t::zero() ),
   vary_combat_length( 0.0 ),
   current_iteration( -1 ),
   iterations( 0 ),
-  canceled( 0 ),
+  canceled( false ),
   target_error( 0 ),
   target_error_role( ROLE_DPS ),
   current_error( 0 ),
@@ -1344,10 +1354,10 @@ sim_t::sim_t() :
   default_region_str( "us" ),
   save_prefix_str( "save_" ),
   save_talent_str( 0 ),
-  talent_format( TALENT_FORMAT_UNCHANGED ),
+  talent_input_format(talent_format::UNCHANGED ),
   stat_cache( 1 ),
   max_aoe_enemies( 20 ),
-  show_etmi( 0 ),
+  show_etmi( false ),
   tmi_window_global( 0 ),
   tmi_bin_size( 0.5 ),
   requires_regen_event( false ), single_actor_batch( false ),
@@ -1359,13 +1369,14 @@ sim_t::sim_t() :
   challenge_mode( false ), timewalk( -1 ), scale_to_itemlevel( -1 ), scale_itemlevel_down_only( false ),
   disable_set_bonuses( false ), disable_2_set( 1 ), disable_4_set( 1 ), enable_2_set( 1 ), enable_4_set( 1 ),
   pvp_crit( false ),
+  auto_attacks_always_land( false ),
   active_enemies( 0 ), active_allies( 0 ),
   _rng(), seed( 0 ), deterministic( 0 ), strict_work_queue( 0 ),
   average_range( true ), average_gauss( false ),
   fight_style(), add_waves( 0 ), overrides( overrides_t() ),
   default_aura_delay( timespan_t::from_millis( 30 ) ),
   default_aura_delay_stddev( timespan_t::from_millis( 5 ) ),
-  azerite_status( AZERITE_ENABLED ),
+  azerite_status(azerite_control::ENABLED ),
   progress_bar( *this ),
   scaling( new scaling_t( this ) ),
   plot( new plot_t( this ) ),
@@ -1383,7 +1394,8 @@ sim_t::sim_t() :
   // Report
   report_precision(2), report_pets_separately( 0 ), report_targets( 1 ), report_details( 1 ), report_raw_abilities( 1 ),
   report_rng( 0 ), hosted_html( 0 ),
-  save_raid_summary( 0 ), save_gear_comments( 0 ), statistics_level( 1 ), separate_stats_by_actions( 0 ), report_raid_summary( 0 ), buff_uptime_timeline( 0 ),
+  save_raid_summary( 0 ), save_gear_comments( 0 ), statistics_level( 1 ), separate_stats_by_actions( 0 ), report_raid_summary( 0 ),
+  buff_uptime_timeline( 0 ), buff_stack_uptime_timeline( 0 ),
   json_full_states( 0 ),
   decorated_tooltips( -1 ),
   allow_potions( true ),
@@ -1391,10 +1403,12 @@ sim_t::sim_t() :
   allow_flasks( true ),
   allow_augmentations( true ),
   solo_raid( false ),
-  global_item_upgrade_level( 0 ),
   maximize_reporting( false ),
+#ifndef SC_NO_NETWORKING
   apikey( get_api_key() ),
+#endif
   distance_targeting_enabled( false ),
+  ignore_invulnerable_targets( false ),
   enable_dps_healing( false ),
   scaling_normalized( 1.0 ),
   // Multi-Threading
@@ -1571,7 +1585,7 @@ void sim_t::cancel()
 
   work_queue -> flush();
 
-  canceled = 1;
+  canceled = true;
 
   for (auto & relative : relatives)
   {
@@ -1643,13 +1657,14 @@ void sim_t::reset()
 
   expected_iteration_time = max_time * iteration_time_adjust();
 
-  analyze_number = 0;
-
   for ( auto& buff : buff_list )
     buff -> reset();
 
   for ( auto& target : target_list )
+  {
     target -> reset();
+    range::for_each( target->pet_list, []( pet_t* pet ) { pet->reset(); } );
+  }
 
   if ( single_actor_batch )
   {
@@ -1733,8 +1748,6 @@ void sim_t::combat_begin()
     if ( m ) m -> combat_begin( this );
   }
 
-  raid_event_t::combat_begin( this );
-
   if ( single_actor_batch )
   {
     player_no_pet_list[ current_index ] -> combat_begin();
@@ -1775,6 +1788,8 @@ void sim_t::combat_begin()
   {
     legion_data.pantheon_proxy -> start();
   }
+
+  raid_event_t::combat_begin( this );
 }
 
 // sim_t::combat_end ========================================================
@@ -2190,6 +2205,24 @@ void sim_t::init_fight_style()
   {
     raid_events_str += "/casting,cooldown=500,duration=500";
   }
+  else if ( util::str_compare_ci( fight_style, "DungeonSlice" ) )
+  { //Based on the Hero Dungeon setup
+    max_time                       = timespan_t::from_seconds( 360.0 );
+    //Disables all raidbuffs, except those provided by scrolls or the character itself.
+    optimal_raid                   = 0;
+    overrides.arcane_intellect     = 1;
+    overrides.battle_shout         = 1;
+    overrides.power_word_fortitude = 1;
+    overrides.bloodlust            = 1;
+
+    ignore_invulnerable_targets = true;
+
+    raid_events_str +=
+        "/invulnerable,cooldown=500,duration=500,retarget=1"
+        "/adds,name=Boss,count=1,cooldown=500,duration=140,duration_stddev=2"
+        "/adds,name=SmallAdd,count=5,count_range=1,first=140,cooldown=45,duration=15,duration_stddev=2"
+        "/adds,name=BigAdd,count=2,count_range=1,first=155,cooldown=45,duration=30,duration_stddev=2";
+  }
   else
   {
     fight_style = "Patchwerk";
@@ -2384,7 +2417,7 @@ void sim_t::init_actor( player_t* p )
     p -> init_absorb_priority();
     p -> init_assessors();
   }
-  catch (const std::exception& e)
+  catch (const std::exception&)
   {
     std::throw_with_nested(std::runtime_error(fmt::format("Actor '{}'", p->name())));
   }
@@ -2461,7 +2494,7 @@ void sim_t::init()
   }
   else if ( timewalk > 0 )
   {
-    if ( scale_to_itemlevel != -1 )
+    if ( scale_to_itemlevel == -1 )
     {
       switch ( timewalk )
       {
@@ -2483,17 +2516,17 @@ void sim_t::init()
     }
   }
 
-  auras.arcane_intellect = buff_creator_t( this, "arcane_intellect", dbc::find_spell( this, 1459 ) )
-                           .default_value( dbc::find_spell( this, 1459 ) -> effectN( 1 ).percent() )
-                           .add_invalidate( CACHE_INTELLECT );
+  auras.arcane_intellect = make_buff( this, "arcane_intellect", dbc::find_spell( this, 1459 ) )
+                           ->set_default_value( dbc::find_spell( this, 1459 ) -> effectN( 1 ).percent() )
+                           ->add_invalidate( CACHE_INTELLECT );
 
-  auras.battle_shout = buff_creator_t( this, "battle_shout", dbc::find_spell( this, 6673 ) )
-                        .default_value( dbc::find_spell( this, 6673 )->effectN( 1 ).percent() )
-                        .add_invalidate( CACHE_ATTACK_POWER );
+  auras.battle_shout = make_buff( this, "battle_shout", dbc::find_spell( this, 6673 ) )
+                        ->set_default_value( dbc::find_spell( this, 6673 )->effectN( 1 ).percent() )
+                        ->add_invalidate( CACHE_ATTACK_POWER );
 
-  auras.power_word_fortitude = buff_creator_t( this, "power_word_fortitude", dbc::find_spell( this, 21562 ) )
-                           .default_value( dbc::find_spell( this, 21562 ) -> effectN( 1 ).percent() )
-                           .add_invalidate( CACHE_STAMINA );
+  auras.power_word_fortitude = make_buff( this, "power_word_fortitude", dbc::find_spell( this, 21562 ) )
+                           ->set_default_value( dbc::find_spell( this, 21562 ) -> effectN( 1 ).percent() )
+                           ->add_invalidate( CACHE_STAMINA );
 
   // Find Already defined target, otherwise create a new one.
   if ( debug )
@@ -2573,7 +2606,7 @@ void sim_t::init()
 
   for ( const auto& player : player_list )
   {
-    if ( player -> regen_type == REGEN_STATIC )
+    if ( player ->resource_regeneration ==  regen_type::STATIC )
     {
       requires_regen_event = true;
       break;
@@ -2592,7 +2625,7 @@ void sim_t::init()
       {
         actor -> init_finished();
       }
-      catch (const std::exception& e)
+      catch (const std::exception&)
       {
         std::throw_with_nested(std::runtime_error(fmt::format("Actor '{}'", actor->name())));
       }
@@ -2614,7 +2647,12 @@ void sim_t::init()
     }
   }
 
-  profilesets.initialize( this );
+  // If save= option is used, don't bother initializing profilesets as the main thread is going to
+  // exit in any case
+  if ( active_player && active_player->report_information.save_str.empty() )
+  {
+    profilesets.initialize( this );
+  }
 
   initialized = true;
 
@@ -3078,7 +3116,7 @@ bool sim_t::time_to_think( timespan_t proc_time )
 
 // sim_t::create_expression =================================================
 
-expr_t* sim_t::create_expression( const std::string& name_str )
+std::unique_ptr<expr_t> sim_t::create_expression( const std::string& name_str )
 {
   if ( name_str == "desired_targets" )
     return expr_t::create_constant( name_str, desired_targets );
@@ -3166,7 +3204,7 @@ expr_t* sim_t::create_expression( const std::string& name_str )
         return nonexecute_actors_pct;
       }
     };
-    return new nonexecute_actors_pct_expr( this );
+    return std::make_unique<nonexecute_actors_pct_expr>( this );
   }
 
   std::vector<std::string> splits = util::string_split( name_str, "." );
@@ -3225,7 +3263,7 @@ expr_t* sim_t::create_expression( const std::string& name_str )
 
     };
 
-    return new raid_event_expr_t( this, type_or_name, filter );
+    return std::make_unique<raid_event_expr_t>( this, type_or_name, filter );
   }
 
   // If nothing else works, check to see if the string matches an actor in the sim.
@@ -3328,6 +3366,7 @@ void sim_t::create_options()
   add_option( opt_bool( "save_profile_with_actions", save_profile_with_actions ) );
   add_option( opt_bool( "default_actions", default_actions ) );
   add_option( opt_bool( "debug", debug ) );
+  add_option( opt_bool( "strict_parsing", strict_parsing ) );
   add_option( opt_bool( "debug_each", debug_each ) );
   add_option( opt_func( "debug_seed", parse_debug_seed ) );
   add_option( opt_string( "html", html_file_str ) );
@@ -3340,6 +3379,7 @@ void sim_t::create_options()
   add_option( opt_bool( "save_raid_summary", save_raid_summary ) );
   add_option( opt_bool( "save_gear_comments", save_gear_comments ) );
   add_option( opt_bool( "buff_uptime_timeline", buff_uptime_timeline ) );
+  add_option( opt_bool( "buff_stack_uptime_timeline", buff_stack_uptime_timeline ) );
   add_option( opt_bool( "json_full_states", json_full_states ) );
   // Bloodlust
   add_option( opt_int( "bloodlust_percent", bloodlust_percent ) );
@@ -3386,6 +3426,7 @@ void sim_t::create_options()
   add_option( opt_uint( "enable_2_set", enable_2_set ) );
   add_option( opt_uint( "enable_4_set", enable_4_set ) );
   add_option( opt_bool( "pvp", pvp_crit ) );
+  add_option( opt_bool( "auto_attacks_always_land", auto_attacks_always_land ) );
   add_option( opt_int( "desired_targets", desired_targets ) );
   add_option( opt_bool( "show_etmi", show_etmi ) );
   add_option( opt_float( "tmi_window_global", tmi_window_global ) );
@@ -3456,10 +3497,12 @@ void sim_t::create_options()
   add_option( opt_bool( "monitor_cpu", event_mgr.monitor_cpu ) );
   add_option( opt_func( "maximize_reporting", parse_maximize_reporting ) );
   add_option( opt_string( "apikey", apikey ) );
+  add_option( opt_string( "apitoken", user_apitoken ) );
   add_option( opt_bool( "distance_targeting_enabled", distance_targeting_enabled ) );
+  add_option( opt_bool( "ignore_invulnerable_targets", ignore_invulnerable_targets ) );
   add_option( opt_bool( "enable_dps_healing", enable_dps_healing ) );
   add_option( opt_float( "scaling_normalized", scaling_normalized ) );
-  add_option( opt_int( "global_item_upgrade_level", global_item_upgrade_level ) );
+  add_option( opt_obsoleted( "global_item_upgrade_level" ) );
   add_option( opt_int( "decorated_tooltips", decorated_tooltips ) );
   // Charts
   add_option( opt_bool( "chart_show_relative_difference", chart_show_relative_difference ) );
@@ -3504,15 +3547,15 @@ void sim_t::create_options()
   add_option( opt_func( "disable_azerite", []( sim_t* sim, const std::string&, const std::string& value ) {
     if ( value == "1" )
     {
-      sim -> azerite_status = AZERITE_DISABLED_ALL;
+      sim -> azerite_status = azerite_control::DISABLED_ALL;
     }
     else if ( util::str_compare_ci( value, "items" ) )
     {
-      sim -> azerite_status = AZERITE_DISABLED_ITEMS;
+      sim -> azerite_status = azerite_control::DISABLED_ITEMS;
     }
     else if ( util::str_compare_ci( value, "all" ) )
     {
-      sim -> azerite_status = AZERITE_DISABLED_ALL;
+      sim -> azerite_status = azerite_control::DISABLED_ALL;
     }
     else
     {
@@ -3528,6 +3571,89 @@ void sim_t::create_options()
         bfa_opts.secrets_of_the_deep_chance, 0, 1 ) );
   add_option( opt_float( "bfa.secrets_of_the_deep_collect_chance",
         bfa_opts.secrets_of_the_deep_collect_chance, 0, 1 ) );
+  add_option( opt_int( "bfa.initial_archive_of_the_titans_stacks",
+        bfa_opts.initial_archive_of_the_titans_stacks, 0, 20 ) );
+  add_option( opt_int( "bfa.reorigination_array_stacks",
+        bfa_opts.reorigination_array_stacks, 0, 10 ) );
+  add_option( opt_bool( "bfa.reorigination_array_ignore_scale_factors",
+        bfa_opts.reorigination_array_ignore_scale_factors ) );
+  add_option( opt_float( "bfa.seductive_power_pickup_chance",
+        bfa_opts.seductive_power_pickup_chance, 0.0, 1.0 ) );
+  add_option( opt_int( "bfa.initial_seductive_power_stacks",
+        bfa_opts.initial_seductive_power_stacks, 0, 5 ) );
+  add_option( opt_bool( "bfa.randomize_oscillation",
+        bfa_opts.randomize_oscillation ) );
+  add_option( opt_bool( "bfa.auto_oscillating_overload",
+        bfa_opts.auto_oscillating_overload ) );
+  add_option( opt_bool( "bfa.zuldazar",
+        bfa_opts.zuldazar ) );
+  add_option( opt_timespan( "bfa.covenant_period",
+        bfa_opts.covenant_period, 1_ms, timespan_t::max() ) );
+  add_option( opt_float( "bfa.covenant_chance",
+        bfa_opts.covenant_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.incandescent_sliver_chance",
+        bfa_opts.incandescent_sliver_chance, 0.0, 1.0 ) );
+  add_option( opt_timespan( "bfa.fight_or_flight_period", 
+        bfa_opts.fight_or_flight_period, 1_ms, timespan_t::max() ) );
+  add_option( opt_float( "bfa.fight_or_flight_chance", 
+        bfa_opts.fight_or_flight_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.harbingers_inscrutable_will_silence_chance",
+        bfa_opts.harbingers_inscrutable_will_silence_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.harbingers_inscrutable_will_move_chance",
+        bfa_opts.harbingers_inscrutable_will_move_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.aberrant_tidesage_damage_chance",
+        bfa_opts.aberrant_tidesage_damage_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.fathuuls_floodguards_damage_chance",
+        bfa_opts.fathuuls_floodguards_damage_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.grips_of_forsaken_sanity_damage_chance",
+        bfa_opts.grips_of_forsaken_sanity_damage_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.stormglide_steps_take_damage_chance",
+        bfa_opts.stormglide_steps_take_damage_chance, 0.0, 1.0 ) );
+  add_option( opt_timespan( "bfa.lurkers_insidious_gift_duration",
+        bfa_opts.lurkers_insidious_gift_duration, 0_ms, timespan_t::max() ) );
+  add_option( opt_timespan( "bfa.abyssal_speakers_gauntlets_shield_duration",
+        bfa_opts.abyssal_speakers_gauntlets_shield_duration, 0_ms, timespan_t::max() ) );
+  add_option( opt_timespan( "bfa.trident_of_deep_ocean_duration", 
+        bfa_opts.trident_of_deep_ocean_duration, 0_ms, timespan_t::max() ) );
+  add_option( opt_float( "bfa.legplates_of_unbound_anguish_chance", 
+        bfa_opts.legplates_of_unbound_anguish_chance, 0.0, 1.0 ) );
+  add_option( opt_int( "bfa.loyal_to_the_end_allies",
+        bfa_opts.loyal_to_the_end_allies, 0, 4 ) );
+  add_option( opt_timespan( "bfa.loyal_to_the_end_ally_death_timer",
+        bfa_opts.loyal_to_the_end_ally_death_timer, 1_s, timespan_t::max() ) );
+  add_option( opt_float( "bfa.loyal_to_the_end_ally_death_chance",
+        bfa_opts.loyal_to_the_end_ally_death_chance, 0.0, 1.0 ) );
+  add_option( opt_int( "bfa.worldvein_allies",
+        bfa_opts.worldvein_allies, 0, 10 ) );
+  add_option( opt_float( "bfa.ripple_in_space_proc_chance",
+        bfa_opts.ripple_in_space_proc_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.blood_of_the_enemy_in_range",
+        bfa_opts.blood_of_the_enemy_in_range, 0.0, 1.0 ) );
+  add_option( opt_timespan( "bfa.undulating_tides_lockout_timer",
+        bfa_opts.undulating_tides_lockout_timer, 1_s, timespan_t::max() ) );
+  add_option( opt_float( "bfa.undulating_tides_lockout_chance",
+        bfa_opts.undulating_tides_lockout_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.leviathans_lure_base_rppm",
+        bfa_opts.leviathans_lure_base_rppm, 0.0, 2.0 ) );
+  add_option( opt_float( "bfa.aquipotent_nautilus_catch_chance",
+        bfa_opts.aquipotent_nautilus_catch_chance, 0.0, 1.0 ) );
+  add_option( opt_float( "bfa.zaquls_portal_key_move_chance",
+        bfa_opts.zaquls_portal_key_move_chance, 0.0, 1.0 ) );
+  add_option( opt_timespan( "bfa.anuazshara_unleash_time",
+        bfa_opts.anuazshara_unleash_time, 1_s, timespan_t::max() ) );
+  add_option( opt_bool( "bfa.nazjatar",
+        bfa_opts.nazjatar ) );
+  add_option( opt_bool( "bfa.shiver_venom",
+        bfa_opts.shiver_venom ) );
+  add_option( opt_float( "bfa.storm_of_the_eternal_ratio",
+        bfa_opts.storm_of_the_eternal_ratio, 0.0, 1.0 ) );
+  add_option( opt_timespan( "bfa.font_of_power_precombat_channel",
+        bfa_opts.font_of_power_precombat_channel, 0_ms, 34_s ) );
+  add_option( opt_uint( "bfa.arcane_heart_hps", bfa_opts.arcane_heart_hps) );
+  add_option( opt_int( "bfa.subroutine_recalibration_precombat_stacks",
+    bfa_opts.subroutine_recalibration_precombat_stacks, 0, 11 ) );
+  add_option( opt_int( "bfa.subroutine_recalibration_dummy_casts",
+    bfa_opts.subroutine_recalibration_dummy_casts, 0, 11 ) );
 
   // applies to: "lavish_suramar_feast", battle for azeroth feasts
   add_option( opt_bool( "feast_as_dps", feast_as_dps ) );
@@ -3539,13 +3665,37 @@ bool sim_t::parse_option( const std::string& name,
                           const std::string& value )
 {
   if ( active_player )
-    if ( opts::parse( this, active_player -> options, name, value ) )
-      return true;
+  {
+    auto ret = opts::parse( this, active_player->options, name, value );
 
-  if ( opts::parse( this, options, name, value ) )
-    return true;
+    // Bail out early on player-specific option error states
+    switch ( ret )
+    {
+      case opts::parse_status::DEPRECATED:
+      case opts::parse_status::FAILURE:
+        return false;
+      case opts::parse_status::OK:
+        return true;
+      default:
+        break;
+    }
+  }
 
-  return false;
+  auto ret = opts::parse( this, options, name, value );
+  // With strict_parsing enabled, anything else than "ok" parse status will result in hard failure
+  if ( strict_parsing && ret != opts::parse_status::OK )
+  {
+    return false;
+  }
+
+  // Can't find a player- or sim scope option with name, warn the user
+  if ( ret == opts::parse_status::NOT_FOUND )
+  {
+    error( "Warning: Unknown option '{}' with value '{}', ignoring",
+      name, value );
+  }
+
+  return ret != opts::parse_status::FAILURE;
 }
 
 // sim_t::setup =============================================================
@@ -3592,12 +3742,13 @@ void sim_t::setup( sim_control_t* c )
                 fmt::format("Unable to locate player '{}' for option '{}' with value '{}'.",
                     o.scope, o.name, o.value));
     }
-    if ( ! opts::parse(this, p->options, o.name, o.value))
+
+    auto ret = opts::parse( this, p->options, o.name, o.value );
+    if ( ret == opts::parse_status::FAILURE )
     {
       throw std::invalid_argument(fmt::format("Unable to parse option '{}' with value '{}' for player '{}'.",
           o.name, o.value, p->name()));
     }
-
   }
 
   if ( player_list.empty() && spell_query == nullptr && ! display_bonus_ids )
@@ -3607,7 +3758,7 @@ void sim_t::setup( sim_control_t* c )
 
   if ( parent )
   {
-    debug = 0;
+    debug = false;
     log = 0;
   }
   else if ( ! output_file_str.empty() )
@@ -3625,7 +3776,7 @@ void sim_t::setup( sim_control_t* c )
     }
   }
   if ( debug_each )
-    debug = 1;
+    debug = true;
 
   if ( debug )
   {
@@ -3769,7 +3920,7 @@ void sim_t::detailed_progress( std::string* detail, int current_iterations, int 
   if ( detail )
   {
     detail -> clear();
-    *detail = fmt::format("fooo {:d}/{:d}", current_iterations, total_iterations );
+    *detail = fmt::format("Iteration {:d}/{:d}", current_iterations, total_iterations );
   }
 }
 
@@ -4004,6 +4155,7 @@ void sim_t::activate_actors()
   progress_bar.progress();
 
   current_iteration = -1;
+  analyze_number = 0;
 }
 
 bool sim_t::has_raid_event( const std::string& type ) const

@@ -221,11 +221,11 @@ const std::vector<class_passives_entry_t> _class_passives {
 
 int dbc::build_level( bool ptr )
 {
-  return maybe_ptr( ptr ) ? 27602 : 27602;
+  return maybe_ptr( ptr ) ? 32044 : 31478;
 }
 
 const char* dbc::wow_version( bool ptr )
-{ return maybe_ptr( ptr ) ? "8.0.1" : "8.0.1"; }
+{ return maybe_ptr( ptr ) ? "8.3.0" : "8.2.0"; }
 
 const char* dbc::wow_ptr_status( bool ptr )
 #if SC_BETA
@@ -364,6 +364,9 @@ bool dbc::valid_gem_color( unsigned color )
     case SOCKET_COLOR_LIFE:
     case SOCKET_COLOR_WIND:
     case SOCKET_COLOR_HOLY:
+    case SOCKET_COLOR_RED_PUNCHCARD:
+    case SOCKET_COLOR_YELLOW_PUNCHCARD:
+    case SOCKET_COLOR_BLUE_PUNCHCARD:
       return true;
     default:
       return false;
@@ -760,7 +763,7 @@ specialization_e dbc::translate_spec_str( player_e ptype, const std::string& spe
 
 // specialization_string ====================================================
 
-std::string dbc::specialization_string( specialization_e spec )
+const char* dbc::specialization_string( specialization_e spec )
 {
   switch ( spec )
   {
@@ -1006,8 +1009,8 @@ double dbc::item_level_squish( unsigned source_ilevel, bool ptr )
 #if SC_USE_PTR == 1
   if ( ptr )
   {
-    assert( sizeof_array( __ptr_item_level_squish ) >= source_ilevel );
-    return __ptr_item_level_squish[ source_ilevel - 1 ];
+    assert( sizeof_array( _ptr__item_level_squish ) >= source_ilevel );
+    return _ptr__item_level_squish[ source_ilevel - 1 ];
   }
   else
   {
@@ -1432,8 +1435,8 @@ unsigned dbc_t::azerite_item_level( unsigned power_level ) const
   }
 
 #if SC_USE_PTR
-  auto arr = ptr ? __ptr_azerite_level_to_item_level;
-                 : __azerite_level_to_item_level
+  auto arr = ptr ? _ptr__azerite_level_to_item_level
+                 : __azerite_level_to_item_level;
 #else
   auto arr = __azerite_level_to_item_level;
 #endif
@@ -1728,6 +1731,12 @@ double spelleffect_data_t::average( const item_t* item ) const
     const auto& props = item -> player -> dbc.random_property( item -> item_level() );
     budget = props.damage_replace_stat;
   }
+  else if ( _spell->scaling_class() == PLAYER_NONE &&
+            _spell->flags( spell_attribute::SX_SCALE_ILEVEL ) )
+  {
+    const auto& props = item -> player -> dbc.random_property( item -> item_level() );
+    budget = props.damage_secondary;
+  }
 
   return _m_coeff * budget;
 }
@@ -1747,22 +1756,21 @@ double dbc_t::armor_mitigation_constant( unsigned level ) const
 {
   assert( level > 0 && level <= ( MAX_SCALING_LEVEL + 3 ) );
 #if SC_USE_PTR
-  return ptr ? _ptr__armor_mitigation_by_lvl[ level - 1 ] : __armor_mitigation_by_lvl[ level - 1 ];
+  return ptr ? __ptr_armor_mitigation_constants_data[ level - 1 ]
+             : __armor_mitigation_constants_data[ level - 1 ];
 #else
-  return __armor_mitigation_by_lvl[ level - 1 ];
+  return __armor_mitigation_constants_data[ level - 1 ];
 #endif
 }
 
-double dbc_t::npc_armor_mitigation_constant( unsigned level ) const
+double dbc_t::npc_armor_value( unsigned level ) const
 {
-  if ( level == 0 || level > MAX_LEVEL )
-  {
-    return 0;
-  }
+  assert( level > 0 && level <= ( MAX_SCALING_LEVEL + 3 ) );
 #if SC_USE_PTR
-  return ptr ? _ptr__npc_armor_constants_data[ level - 1 ] : __npc_armor_constants_data[ level - 1 ];
+  return ptr ? __ptr_npc_armor_data[ level - 1 ]
+             : __npc_armor_data[ level - 1 ];
 #else
-  return __npc_armor_constants_data[ level - 1 ];
+  return __npc_armor_data[ level - 1 ];
 #endif
 }
 
@@ -2753,7 +2761,7 @@ double dbc_t::weapon_dps( unsigned item_id, unsigned ilevel ) const
 bool dbc_t::spec_idx( specialization_e spec_id, uint32_t& class_idx, uint32_t& spec_index ) const
 {
   if ( spec_id == SPEC_NONE )
-    return 0;
+    return false;
 
   for ( unsigned int i = 0; i < specialization_max_class(); i++ )
   {
@@ -2763,7 +2771,7 @@ bool dbc_t::spec_idx( specialization_e spec_id, uint32_t& class_idx, uint32_t& s
       {
         class_idx = i;
         spec_index = j;
-        return 1;
+        return true;
       }
       if ( __class_spec_id[ i ][ j ] == SPEC_NONE )
       {
@@ -2771,7 +2779,7 @@ bool dbc_t::spec_idx( specialization_e spec_id, uint32_t& class_idx, uint32_t& s
       }
     }
   }
-  return 0;
+  return false;
 }
 
 specialization_e dbc_t::spec_by_idx( const player_e c, unsigned idx ) const

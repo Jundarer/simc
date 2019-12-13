@@ -5,12 +5,16 @@ INCLUDEPATH = ../engine
 INCLUDEPATH += ../engine/util
 DEPENDPATH  = ../engine
 VPATH       = ..
-CONFIG     += c++11
+CONFIG      += c++14
 
 CONFIG(debug, debug|release): OBJECTS_DIR = build/debug
 CONFIG(release, debug|release): OBJECTS_DIR = build/release
 
 QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.7
+
+isEmpty(SC_NO_NETWORKING) {
+  SC_NO_NETWORKING=$$(SC_NO_NETWORKING)
+}
 
 # Setup some paths if DESTDIR/PREFIX are defined for Linux stuff
 unix:!macx {
@@ -43,6 +47,11 @@ CONFIG(openssl) {
   }
 }
 
+!isEmpty(SC_NO_NETWORKING) {
+  DEFINES += SC_NO_NETWORKING
+  message(Building without networking support)
+}
+
 contains(QMAKE_CXX, .+/clang\+\+)|contains(QMAKE_CXX, .+/g\+\+) {
   QMAKE_CXXFLAGS += -Wextra
   QMAKE_CXXFLAGS_RELEASE -= -O2
@@ -63,7 +72,6 @@ macx {
   contains(QMAKE_CXX, .+/clang\+\+) {
     QMAKE_CXXFLAGS += -Wno-inconsistent-missing-override
   }
-  LIBS += -framework Security
 
   CONFIG(sanitize) {
     QMAKE_CXXFLAGS += -fsanitize=address
@@ -72,9 +80,9 @@ macx {
 }
 
 win32 {
-  LIBS += -lwininet -lshell32
-  win32-msvc2013|win32-msvc2015 {
-    QMAKE_CXXFLAGS_RELEASE += /Ot /MP
+  LIBS += -lshell32
+  win32-msvc {
+    QMAKE_CXXFLAGS_RELEASE += /O2 /MP /GL
     QMAKE_CXXFLAGS_WARN_ON += /w44800 /w44100 /w44065
   }
 
@@ -100,4 +108,28 @@ win32 {
   }
 }
 
+# Curl is now required for everything, on unixy systems use pkg-config to find it, on Windows,
+# require CURL_ROOT to be defined (in an environment variable or compilation definition) and
+# pointing to the base curl directory (dll found in CURL_ROOT/bin, includes in CURL_ROOT/include)
+!win32 {
+  isEmpty(SC_NO_NETWORKING) {
+    CONFIG += link_pkgconfig
+    PKGCONFIG += libcurl
+  }
+}
+
+win32 {
+  isEmpty(SC_NO_NETWORKING) {
+    isEmpty(CURL_ROOT) {
+      CURL_ROOT = $$(CURL_ROOT)
+    }
+
+    isEmpty(CURL_ROOT) {
+      error(Libcurl (https://curl.haxx.se) windows libraries must be built and output base directory set in CURL_ROOT)
+    }
+
+    INCLUDEPATH += "$$CURL_ROOT/include"
+    LIBS += "$$CURL_ROOT/lib/libcurl.lib"
+  }
+}
 

@@ -40,24 +40,24 @@ timespan_t attack_t::execute_time() const
   return base_execute_time * player->cache.attack_speed();
 }
 
-dmg_e attack_t::amount_type( const action_state_t*, bool periodic ) const
+result_amount_type attack_t::amount_type( const action_state_t*, bool periodic ) const
 {
   if ( periodic )
-    return DMG_OVER_TIME;
+    return result_amount_type::DMG_OVER_TIME;
   else
-    return DMG_DIRECT;
+    return result_amount_type::DMG_DIRECT;
 }
 
-dmg_e attack_t::report_amount_type( const action_state_t* state ) const
+result_amount_type attack_t::report_amount_type( const action_state_t* state ) const
 {
-  dmg_e result_type = state->result_type;
+  auto result_type = state->result_type;
 
-  if ( result_type == DMG_DIRECT )
+  if ( result_type == result_amount_type::DMG_DIRECT )
   {
     // Direct ticks are direct damage, that are recorded as ticks
     if ( direct_tick )
     {
-      result_type = DMG_OVER_TIME;
+      result_type = result_amount_type::DMG_OVER_TIME;
     }
     else
     {
@@ -65,7 +65,7 @@ dmg_e attack_t::report_amount_type( const action_state_t* state ) const
       // someone. If so, then the damage should be recorded as periodic.
       if ( stats->action_list.front()->tick_action == this )
       {
-        result_type = DMG_OVER_TIME;
+        result_type = result_amount_type::DMG_OVER_TIME;
       }
     }
   }
@@ -75,6 +75,11 @@ dmg_e attack_t::report_amount_type( const action_state_t* state ) const
 
 double attack_t::miss_chance( double hit, player_t* t ) const
 {
+  if ( t->is_enemy() && sim->auto_attacks_always_land && !special )
+  {
+    return 0.0;
+  }
+
   // cache.miss() contains the target's miss chance (3.0 base in almost all cases)
   double miss = t->cache.miss();
 
@@ -93,6 +98,11 @@ double attack_t::miss_chance( double hit, player_t* t ) const
 
 double attack_t::dodge_chance( double expertise, player_t* t ) const
 {
+  if ( t->is_enemy() && sim->auto_attacks_always_land && !special )
+  {
+    return 0.0;
+  }
+
   // cache.dodge() contains the target's dodge chance (3.0 base, plus spec bonuses and rating)
   double dodge = t->cache.dodge();
 
@@ -107,6 +117,11 @@ double attack_t::dodge_chance( double expertise, player_t* t ) const
 
 double attack_t::block_chance( action_state_t* s ) const
 {
+  if ( s->target->is_enemy() && sim->auto_attacks_always_land && !special )
+  {
+    return 0.0;
+  }
+
   // cache.block() contains the target's block chance (3.0 base for bosses, more for shield tanks)
   double block = s->target->cache.block();
 
@@ -330,6 +345,11 @@ void melee_attack_t::init()
 
 double melee_attack_t::parry_chance( double expertise, player_t* t ) const
 {
+  if ( t->is_enemy() && sim->auto_attacks_always_land && !special )
+  {
+    return 0.0;
+  }
+
   // cache.parry() contains the target's parry chance (3.0 base, plus spec
   // bonuses and rating)
   double parry = t->cache.parry();
@@ -422,13 +442,13 @@ void ranged_attack_t::schedule_execute( action_state_t* execute_state )
 
     player->executing      = this;
     player->gcd_ready      = sim->current_time() + gcd();
-    player->gcd_haste_type = gcd_haste;
-    switch ( gcd_haste )
+    player->gcd_type = gcd_type;
+    switch ( gcd_type )
     {
-      case HASTE_SPELL:
+    case gcd_haste_type::SPELL_HASTE:
         player->gcd_current_haste_value = player->cache.spell_haste();
         break;
-      case HASTE_ATTACK:
+      case gcd_haste_type::ATTACK_HASTE:
         player->gcd_current_haste_value = player->cache.attack_haste();
         break;
       default:

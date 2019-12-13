@@ -48,6 +48,13 @@ int main( int argc, char *argv[] )
   qInstallMessageHandler(messageOutput);
 #endif
 
+  #if (QT_VERSION >= QT_VERSION_CHECK(5, 6, 0))
+    QCoreApplication::setAttribute( Qt::AA_EnableHighDpiScaling );
+    qputenv( "QT_AUTO_SCREEN_SCALE_FACTOR", "1" );
+  #endif
+
+  QApplication a( argc, argv );
+
   QLocale::setDefault( QLocale( "C" ) );
   std::locale::global( std::locale( "C" ) );
   setlocale( LC_ALL, "C" );
@@ -57,15 +64,12 @@ int main( int argc, char *argv[] )
   unique_gear::register_hotfixes();
   unique_gear::register_special_effects();
   unique_gear::sort_special_effects();
+  
+  #ifndef SC_NO_NETWORKING
+  bcp_api::token_load();
+  #endif
 
   hotfix::apply();
-
-#if (QT_VERSION >= QT_VERSION_CHECK(5, 6, 0))
-  QCoreApplication::setAttribute( Qt::AA_EnableHighDpiScaling );
-  qputenv( "QT_AUTO_SCREEN_SCALE_FACTOR", "1" );
-#endif
-
-  QApplication a( argc, argv );
 
   QApplication::setStyle( QStyleFactory::create( "Fusion" ) );
   QCoreApplication::setApplicationName( "SimulationCraft" );
@@ -127,5 +131,13 @@ int main( int argc, char *argv[] )
 
   parse_additional_args( w, a.arguments() );
 
-  return a.exec();
+  auto ret = a.exec();
+
+  dbc::de_init();
+
+  #ifndef SC_NO_NETWORKING
+  bcp_api::token_save();
+  #endif
+
+  return ret;
 }

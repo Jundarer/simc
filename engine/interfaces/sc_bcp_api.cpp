@@ -9,6 +9,12 @@
 #include "util/rapidjson/stringbuffer.h"
 #include "util/rapidjson/prettywriter.h"
 
+#ifndef SC_NO_NETWORKING
+#include <curl/curl.h>
+#endif
+
+#include "../util/utf8-h/utf8.h"
+
 // ==========================================================================
 // Blizzard Community Platform API
 // ==========================================================================
@@ -17,419 +23,662 @@ namespace { // UNNAMED NAMESPACE
 
 struct player_spec_t
 {
-  std::string region, server, name, url, cleanurl, local_json, origin, talent_spec;
+  std::string region, server, name, url, origin, talent_spec;
+
+  std::string local_json;
+  std::string local_json_spec;
+  std::string local_json_equipment;
+  std::string local_json_media;
 };
+
+static const std::string GLOBAL_OAUTH_ENDPOINT_URI = "https://{}.battle.net/oauth/token";
+static const std::string CHINA_OAUTH_ENDPOINT_URI = "https://www.battlenet.com.cn/oauth/token";
+
+static const std::string GLOBAL_GUILD_ENDPOINT_URI = "https://{}.api.blizzard.com/wow/guild/{}/{}?fields=members&locale={}";
+static const std::string CHINA_GUILD_ENDPOINT_URI = "https://gateway.battlenet.com.cn/wow/guild/{}/{}?fields=members&locale={}";
+
+static const std::string GLOBAL_PLAYER_ENDPOINT_URI = "https://{}.api.blizzard.com/profile/wow/character/{}/{}?namespace=profile-{}&locale={}";
+static const std::string CHINA_PLAYER_ENDPOINT_URI = "https://gateway.battlenet.com.cn/profile/wow/character/{}/{}?namespace=profile-cn";
+
+static const std::string GLOBAL_ITEM_ENDPOINT_URI = "https://{}.api.blizzard.com/wow/item/{}?locale={}";
+static const std::string CHINA_ITEM_ENDPOINT_URI = "https://gateway.battlenet.com.cn/wow/item/{}";
+
+static const std::string GLOBAL_ORIGIN_URI = "https://worldofwarcraft.com/{}/character/{}/{}";
+static const std::string CHINA_ORIGIN_URI = "https://www.wowchina.com/zh-cn/character/{}/{}";
+
+static std::unordered_map<std::string, std::pair<std::string, std::string>> LOCALES {
+  { "us", { "en_US", "en-us" } },
+  { "eu", { "en_GB", "en-gb" } },
+  { "kr", { "ko_KR", "ko-kr" } },
+  { "tw", { "zh_TW", "zh-tw" } }
+};
+
+static std::string token_path = "";
+static std::string token = "";
+static bool authorization_failed = false;
+mutex_t token_mutex;
+
+#ifndef SC_NO_NETWORKING
+
+size_t data_cb( void* contents, size_t size, size_t nmemb, void* usr )
+{
+  std::string* obj = reinterpret_cast<std::string*>( usr );
+  obj->append( reinterpret_cast<const char*>( contents ), size * nmemb );
+  return size * nmemb;
+}
+
+std::vector<std::string> token_paths()
+{
+  std::vector<std::string> paths;
+
+  paths.emplace_back("./simc-apitoken" );
+
+  if ( const char* home_path = getenv( "HOME" ) )
+  {
+    paths.push_back( std::string( home_path ) + "/.simc-apitoken" );
+  }
+
+  if ( const char* home_drive = getenv( "HOMEDRIVE" ) )
+  {
+    if ( const char* home_path = getenv( "HOMEPATH" ) )
+    {
+      paths.push_back( std::string( home_drive ) + std::string( home_path ) + "/simc-apitoken" );
+    }
+  }
+
+  return paths;
+}
+
+// Authorize to the blizzard api
+bool authorize( sim_t* sim, const std::string& region )
+{
+  if ( !sim->user_apitoken.empty() )
+  {
+    return true;
+  }
+
+  // Authorization needs to be a single threaded process, all threads will re-use the same token
+  // once a single thread properly fetches it
+  auto_lock_t lock( token_mutex );
+
+  // If an authorization process failed on any thread attempting to perform it, no point trying it
+  // again, just fail the rest
+  if ( authorization_failed )
+  {
+    return false;
+  }
+
+  // A token has already been loaded, so don't re-authorize
+  if ( !token.empty() )
+  {
+    return true;
+  }
+
+  std::string ua_str = "Simulationcraft/" + std::string( SC_VERSION );
+
+  std::string oauth_endpoint;
+  if ( util::str_compare_ci( region, "eu" ) || util::str_compare_ci( region, "us" ) )
+  {
+    oauth_endpoint = fmt::format( GLOBAL_OAUTH_ENDPOINT_URI, region );
+  }
+  else if ( util::str_compare_ci( region, "kr" ) || util::str_compare_ci( region, "tw" ) )
+  {
+    oauth_endpoint = fmt::format( GLOBAL_OAUTH_ENDPOINT_URI, "apac" );
+  }
+  else if ( util::str_compare_ci( region, "cn" ) )
+  {
+    oauth_endpoint = CHINA_OAUTH_ENDPOINT_URI;
+  }
+
+  auto handle = curl_easy_init();
+  std::string buffer;
+  char error_buffer[ CURL_ERROR_SIZE ];
+  error_buffer[ 0 ] = '\0';
+
+  curl_easy_setopt( handle, CURLOPT_URL, oauth_endpoint.c_str() );
+  //curl_easy_setopt( handle, CURLOPT_VERBOSE, 1L);
+  curl_easy_setopt( handle, CURLOPT_FAILONERROR, 1L);
+  curl_easy_setopt( handle, CURLOPT_POSTFIELDS, "grant_type=client_credentials" );
+  curl_easy_setopt( handle, CURLOPT_USERPWD, sim->apikey.c_str() );
+  curl_easy_setopt( handle, CURLOPT_TIMEOUT, 15L );
+  curl_easy_setopt( handle, CURLOPT_FOLLOWLOCATION, 1L );
+  curl_easy_setopt( handle, CURLOPT_MAXREDIRS, 5L );
+  curl_easy_setopt( handle, CURLOPT_ACCEPT_ENCODING, "");
+  curl_easy_setopt( handle, CURLOPT_USERAGENT, ua_str.c_str() );
+  curl_easy_setopt( handle, CURLOPT_WRITEFUNCTION, data_cb );
+  curl_easy_setopt( handle, CURLOPT_WRITEDATA, reinterpret_cast<void*>( &buffer ) );
+  curl_easy_setopt( handle, CURLOPT_ERRORBUFFER, error_buffer );
+
+  auto res = curl_easy_perform( handle );
+  if ( res != CURLE_OK )
+  {
+    std::cerr << "Unable to fetch bearer token from " << oauth_endpoint << ", " << error_buffer << std::endl;
+    curl_easy_cleanup( handle );
+    authorization_failed = true;
+    return false;
+  }
+
+  rapidjson::Document response;
+  response.Parse< 0 >( buffer );
+  if ( response.HasParseError() )
+  {
+    std::cerr << "Unable to parse response message from " << oauth_endpoint << std::endl;
+    curl_easy_cleanup( handle );
+    authorization_failed = true;
+    return false;
+  }
+
+  if ( !response.HasMember( "access_token" ) )
+  {
+    std::cerr << "Malformed JSON object from " << oauth_endpoint << std::endl;
+    curl_easy_cleanup( handle );
+    authorization_failed = true;
+    return false;
+  }
+
+  token = response[ "access_token" ].GetString();
+
+  curl_easy_cleanup( handle );
+
+  return true;
+}
+#else
+bool authorize( sim_t*, const std::string& )
+{
+  return false;
+}
+#endif /* SC_NO_NETWORKING */
 
 // download
 
-bool download( sim_t*               sim,
-               rapidjson::Document& d,
-               std::string&         result,
-               const std::string&   url,
-               const std::string&   cleanurl,
-               cache::behavior_e    caching )
+
+// Check for errors and return the (HTTP) return code from the status message, if applicable. Return
+// value of 0 indicates error.
+int check_for_error( sim_t*                     sim,
+                     const rapidjson::Document& d,
+                     std::vector<int>           allowed_codes = {} )
 {
-  int attempt = 0;
-  do
+  auto ret_code = 200;
+
+  // Old community API NOK status, report Blizzard API reason to the user. Note that there's no way
+  // to check for the return codes in the json object response, since they don't exist there
+  if ( d.IsObject() && d.HasMember( "status" ) &&
+       util::str_compare_ci( d[ "status" ].GetString(), "nok" ) )
   {
-    sc_thread_t::sleep_seconds(attempt * 0.25);
+    sim->error( "Error response from Blizzard API: {}", d[ "reason" ].GetString() );
+    return 0;
+  }
 
-    if ( http::get( result, url, cleanurl, caching ) )
+  // New community API status code handling
+  if ( d.IsObject() && d.HasMember( "code" ) )
+  {
+    ret_code = d[ "code" ].GetInt();
+    if ( range::find( allowed_codes, ret_code ) == allowed_codes.end() )
     {
-      d.Parse< 0 >( result.c_str() );
-
-      if ( ! d.HasParseError() && d.HasMember( "status" ) )
-      {
-        std::string status = d[ "status" ].GetString();
-        // Would be nicer to use status codes, but this will do for now ...
-        if ( status == "nok" && util::str_in_str_ci( d[ "reason" ].GetString(), "not found" ) )
-        {
-          break;
-        }
-      }
-      else
-      {
-        break;
-      }
+      sim->error( "Error response {} from Blizzard API: {}", ret_code, d[ "detail" ].GetString() );
+      return 0;
     }
-  } while ( ++attempt < sim -> armory_retries );
+  }
 
-  return attempt < sim -> armory_retries;
+  return ret_code;
 }
 
-// download_id ==============================================================
+// Check if HTTP response code falls on the ranges of successful responses from the Blizzard API
+bool check_response_code( int response_code )
+{
+  // 401 implies reauthentication required, so it's not a valid response
+  return ( response_code >= 200 && response_code < 300 ) ||
+         ( response_code >= 400 && response_code < 500 && response_code != 401 );
+}
 
-bool download_id( sim_t* sim,
-                  rapidjson::Document& d,
-                  const std::string& region,
-                  unsigned item_id,
-                  std::string apikey,
-                  cache::behavior_e caching )
+bool download( sim_t*               sim,
+               rapidjson::Document& d,
+               const std::string&   region,
+               const std::string&   url,
+               cache::behavior_e    caching )
+{
+  std::vector<std::string> headers;
+  std::string result;
+
+  if ( !authorize( sim, region ) )
+  {
+    return false;
+  }
+
+  if ( !sim->user_apitoken.empty() )
+  {
+    headers.push_back( "Authorization: Bearer " + sim->user_apitoken );
+  }
+  else
+  {
+    headers.push_back( "Authorization: Bearer " + token );
+  }
+
+  // We can make two attempts at most
+  for ( size_t i = 0; i < 2; ++i )
+  {
+    auto response_code = http::get( result, url, caching, "", headers );
+    if ( check_response_code( response_code ) )
+    {
+      break;
+    }
+
+    // Blizzard's issue, lets not bother trying again
+    if ( response_code >= 500 && response_code < 600 )
+    {
+      sim->error( "Blizzard API responded with internal server error ({}), aborting",
+        response_code );
+      return false;
+    }
+    // Bearer token is invalid, lets try to regenerate if we can
+    else if ( response_code == 401 )
+    {
+      // Loaded token is bogus, so clear it
+      token.clear();
+
+      // If there's an user provided apitoken and we get 401, or if we already regenerated
+      // our bearer token successfully, there's no point in trying again
+      if ( !sim->user_apitoken.empty() )
+      {
+        sim->error( "Invalid user 'apitoken' option value '{}'", sim->user_apitoken );
+        return false;
+      }
+
+      // Re-Authorization failed
+      if ( !authorize( sim, region ) )
+      {
+        return false;
+      }
+
+      // Clear old bearer token from headers and add the new one
+      headers.clear();
+      headers.push_back( "Authorization: Bearer " + token );
+    }
+    // Note, not modified is automatically handled by http::get, and translated into 200 OK
+    else
+    {
+      sim->error( "Blizzard API responded with an unhandled HTTP response code {}",
+        response_code );
+      return false;
+    }
+  }
+
+  d.Parse<0>( result.c_str() );
+
+  // Corrupt data
+  if ( !result.empty() && d.HasParseError() )
+  {
+    sim->error( "Malformed response from Blizzard API" );
+    return false;
+  }
+
+  if ( sim->debug )
+  {
+    rapidjson::StringBuffer b;
+    rapidjson::PrettyWriter< rapidjson::StringBuffer > writer( b );
+
+    d.Accept( writer );
+    sim->out_debug.raw() << b.GetString();
+  }
+
+  return true;
+}
+
+// download_item ==============================================================
+
+bool download_item( sim_t* sim,
+                    rapidjson::Document& d,
+                    const std::string& region,
+                    unsigned item_id,
+                    cache::behavior_e caching )
 {
   if ( item_id == 0 )
     return false;
 
   std::string url;
-  std::string cleanurl;
 
-  if ( apikey.size() == 32 && region != "cn" ) //China does not have new api endpoints yet.
+  if ( !util::str_compare_ci( region, "cn" ) )
   {
-    cleanurl = "https://" + region + ".api.battle.net/wow/item/" + util::to_string( item_id ) + "?locale=en_us&apikey=";
-    url = cleanurl + apikey;
+    url = fmt::format( GLOBAL_ITEM_ENDPOINT_URI, region, item_id, LOCALES[ region ].first );
   }
   else
   {
-    url = "http://" + region + ".battle.net/api/wow/item/" + util::to_string( item_id ) + "?locale=en_US";
-    cleanurl = url;
+    url = fmt::format( CHINA_ITEM_ENDPOINT_URI, item_id );
   }
 
-  std::string result;
-  if ( ! download( sim, d, result, url, cleanurl, caching ) )
+  if ( !download( sim, d, region, url, caching ) )
     return false;
+
+  if ( !check_for_error( sim, d ) )
+  {
+    return false;
+  }
 
   return true;
 }
 
-// parse_professions ========================================================
 
-void parse_professions( std::string&               professions_str,
-                        const rapidjson::Value&    profile )
+bool parse_file( sim_t* sim, const std::string& path, rapidjson::Document& d )
 {
-  if ( ! profile.HasMember( "primary" ) )
-    return;
+  std::string result;
+  io::ifstream ifs;
 
-  const rapidjson::Value& professions = profile[ "primary" ];
+  ifs.open( path );
+  result.assign( std::istreambuf_iterator<char>( ifs ), std::istreambuf_iterator<char>() );
 
-  std::vector<profession_e> base_professions;
+  d.Parse<0>( result.c_str() );
 
-  // First, find the two base professions
-  for ( auto idx = 0u, end = professions.Size(); idx < end && base_professions.size() < 2; ++idx )
+  // Corrupt data
+  if ( ! result.empty() && d.HasParseError() )
   {
-    const rapidjson::Value& profession = professions[ idx ];
-    if ( ! profession.HasMember( "id" ) )
-    {
-      continue;
-    }
-
-    auto internal_profession = util::translate_profession_id( profession[ "id" ].GetUint() );
-    if ( internal_profession == PROFESSION_NONE )
-    {
-      continue;
-    }
-
-    base_professions.push_back( internal_profession );
+    sim->error( "Malformed data in '{}'", path );
+    return false;
   }
 
-  // Grab the rank from the first non-base profession entry, hoping that blizzard orders them
-  // sensibly
-  for ( auto profession_id : base_professions )
+  if ( sim->debug )
   {
-    auto profession_token = util::profession_type_string( profession_id );
+    rapidjson::StringBuffer b;
+    rapidjson::PrettyWriter< rapidjson::StringBuffer > writer( b );
 
-    for ( auto idx = 0u, end = professions.Size(); idx < end; ++idx )
-    {
-      const rapidjson::Value& profession = professions[ idx ];
-      if ( ! profession.HasMember( "id" ) || ! profession.HasMember( "rank" ) || ! profession.HasMember( "name" ) )
-      {
-        continue;
-      }
-
-      // Skip the base profession
-      auto internal_profession = util::translate_profession_id( profession[ "id" ].GetUint() );
-      if ( internal_profession != PROFESSION_NONE )
-      {
-        continue;
-      }
-
-      std::string profession_name = profession[ "name" ].GetString();
-      util::tokenize( profession_name );
-
-      if ( ! util::str_in_str_ci( profession_name, profession_token ) )
-      {
-        continue;
-      }
-
-      if ( professions_str.length() > 0 )
-        professions_str += '/';
-
-      professions_str += util::profession_type_string( profession_id );
-      professions_str += "=";
-      professions_str += util::to_string( profession[ "rank" ].GetUint() );
-      break;
-    }
+    d.Accept( writer );
+    sim->out_debug.raw() << b.GetString();
   }
+
+  return true;
 }
 
 // parse_talents ============================================================
 
-const rapidjson::Value* choose_talent_spec( const rapidjson::Value& talents,
-                                                   const std::string& )
+void parse_talents( player_t* p, const player_spec_t& spec_info, const std::string& url, cache::behavior_e caching )
 {
-  for (rapidjson::SizeType i = 0; i < talents.Size(); ++i )
+  rapidjson::Document spec;
+
+  if ( spec_info.local_json.empty() && spec_info.local_json_spec.empty() )
   {
-    if ( talents[ i ].HasMember( "selected" ) )
+    if ( !download( p->sim, spec, p->region_str, url + "&locale=en_US", caching ) )
     {
-      return &talents[ i ];
+      throw std::runtime_error(fmt::format("Unable to download talent JSON from '{}'.",
+          url ));
+    }
+  }
+  else if ( !spec_info.local_json_spec.empty() )
+  {
+    if ( !parse_file( p->sim, spec_info.local_json_spec, spec ) )
+    {
+      throw std::runtime_error( fmt::format( "Unable to parse local JSON from '{}'.",
+        spec_info.local_json_spec ) );
     }
   }
 
-  return nullptr;
-}
-
-void parse_talents( player_t*  p,
-                    const rapidjson::Value& talents,
-                    const std::string& specifier )
-{
-  const rapidjson::Value* spec = choose_talent_spec( talents, specifier );
-  if ( ! spec )
+  if ( !spec.IsObject() )
   {
-    throw std::runtime_error("No talent spec selected.");
+    return;
   }
 
-  if ( ! spec -> HasMember( "calcSpec" ) || ! spec -> HasMember( "calcTalent" ) )
+  if ( !spec.HasMember( "active_specialization" ) ||
+       !spec[ "active_specialization" ].HasMember( "id" ) )
   {
-    throw std::runtime_error("No calcSpec or calcTalent.");
+    throw std::runtime_error( fmt::format( "Unable to determine active spec for talent parsing" ) );
   }
 
-  const char* buffer = (*spec)[ "calcSpec" ].GetString();
-  unsigned sid;
-  switch ( buffer[ 0 ] )
-  {
-    case 'a': sid = 0; break;
-    case 'Z': sid = 1; break;
-    case 'b': sid = 2; break;
-    case 'Y': sid = 3; break;
-    default:  sid = 99; break;
-  }
-  p -> _spec = p -> dbc.spec_by_idx( p -> type, sid );
+  unsigned spec_id = spec[ "active_specialization" ][ "id" ].GetUint();
 
-  std::string talent_encoding = (*spec)[ "calcTalent" ].GetString();
-
-  for ( size_t i = 0; i < talent_encoding.size(); ++i )
+  // Iterate over talent specs, choosing the correct one
+  for ( auto idx = 0U, end = spec[ "specializations" ].Size(); idx < end; ++idx )
   {
-    switch ( talent_encoding[ i ] )
+    const auto& spec_data = spec[ "specializations" ][ idx ];
+    if ( !spec_data.HasMember( "specialization" ) ||
+         !spec_data[ "specialization" ].HasMember( "id" ) )
     {
-      case '.':
-        talent_encoding[ i ] = '0';
-        break;
-      case '0':
-      case '1':
-      case '2':
-        talent_encoding[ i ] += 1;
-        break;
-      default:
-        throw std::runtime_error(fmt::format("Invalid character '{}' in talent encoding.",
-            talent_encoding[ i ] ));
+      throw std::runtime_error( fmt::format( "Unable to determine talent spec for talent parsing" ) );
+    }
+
+    if ( spec_data[ "specialization" ][ "id" ].GetUint() != spec_id )
+    {
+      continue;
+    }
+
+    if ( !spec_data.HasMember( "talents" ) )
+    {
+      continue;
+    }
+
+    const auto& talents = spec_data[ "talents" ];
+
+    for ( auto talent_idx = 0u, talent_end = talents.Size(); talent_idx < talent_end; ++talent_idx )
+    {
+      const auto& talent_data = talents[ talent_idx ];
+
+      if ( !talent_data.HasMember( "talent" ) || !talent_data[ "talent" ].HasMember( "id" ) )
+      {
+        throw std::runtime_error( "Unable to determine talent id for talent parsing" );
+      }
+
+      auto talent_id = talent_data[ "talent" ][ "id" ].GetUint();
+      const auto talent = p->dbc.talent( talent_id );
+      if ( talent->id() != talent_id )
+      {
+        p->sim->error( "Warning: Unable to find talent id {} for {} from Simulationcraft client data",
+          talent_id, p->name() );
+        continue;
+      }
+
+      p->talent_points.select_row_col( talent->row(), talent->col() );
     }
   }
 
-  p -> parse_talents_numbers( talent_encoding );
-
-  p -> create_talents_armory();
-
+  p->recreate_talent_str(talent_format::ARMORY );
 }
 
 // parse_items ==============================================================
 
-bool parse_artifact( item_t& item, const rapidjson::Value& artifact )
+void parse_items( player_t* p, const player_spec_t& spec, const std::string& url, cache::behavior_e caching )
 {
-  if ( ! artifact.HasMember( "artifactId" ) || ! artifact.HasMember( "artifactTraits" ) )
-  {
-    return true;
-  }
+  rapidjson::Document equipment_data;
 
-  auto artifact_id = artifact[ "artifactId" ].GetUint();
-  if ( artifact_id == 0 )
+  if ( spec.local_json.empty() && spec.local_json_equipment.empty() )
   {
-    return true;
-  }
-
-  // If no relics inserted, bail out early
-  if ( ! artifact.HasMember( "relics" ) || artifact[ "relics" ].Size() == 0 )
-  {
-    return true;
-  }
-
-  for ( auto relic_idx = 0U, end = artifact[ "relics" ].Size(); relic_idx < end; ++relic_idx )
-  {
-    const auto& relic = artifact[ "relics" ][ relic_idx ];
-    if ( ! relic.HasMember( "socket" ) )
+    if ( !download( p->sim, equipment_data, p->region_str, url + "&locale=en_US", caching ) )
     {
-      continue;
+      throw std::runtime_error(fmt::format("Unable to download equipment JSON from '{}'.",
+          url ));
+    }
+  }
+  else if ( !spec.local_json_equipment.empty() )
+  {
+    if ( !parse_file( p->sim, spec.local_json_equipment, equipment_data ) )
+    {
+      throw std::runtime_error( fmt::format( "Unable to parse equipment JSON from '{}'.",
+          spec.local_json_equipment ));
+    }
+  }
+
+  if ( !equipment_data.IsObject() || !equipment_data.HasMember( "equipped_items" ) )
+  {
+    return;
+  }
+
+  for ( auto idx = 0u, end = equipment_data[ "equipped_items" ].Size(); idx < end; ++idx )
+  {
+    const auto& slot_data = equipment_data[ "equipped_items" ][ idx ];
+
+    if ( !slot_data.HasMember( "item" ) || !slot_data[ "item" ].HasMember( "id" ) )
+    {
+      throw std::runtime_error( "Unable to parse item data: Missing item information" );
     }
 
-    auto relic_socket = relic[ "socket" ].GetUint();
-    if ( relic.HasMember( "bonusLists" ) )
+    if ( !slot_data.HasMember( "slot" ) || !slot_data[ "slot" ].HasMember( "type" ) )
     {
-      const auto& bonuses = relic[ "bonusLists" ];
-      for ( auto bonus_idx = 0U, end = bonuses.Size(); bonus_idx < end; ++bonus_idx )
+      throw std::runtime_error( "Unable to parse item data: Missing slot information" );
+    }
+
+    slot_e slot = bcp_api::translate_api_slot( slot_data[ "slot" ][ "type" ].GetString() );
+    if ( slot == SLOT_INVALID )
+    {
+      throw std::runtime_error( fmt::format( "Unknown slot '{}'",
+        slot_data[ "slot" ][ "type" ].GetString() ) );
+    }
+
+    auto& item = p->items[ slot ];
+
+    item.parsed.data.id = slot_data[ "item" ][ "id" ].GetUint();
+
+    if ( slot_data.HasMember( "timewalker_level" ) )
+    {
+      item.parsed.drop_level = slot_data[ "timewalker_level" ].GetUint();
+    }
+
+    if ( slot_data.HasMember( "bonus_list" ) )
+    {
+      for ( auto bonus_idx = 0u, end = slot_data[ "bonus_list" ].Size(); bonus_idx < end; ++bonus_idx )
       {
-        item.parsed.relic_data[ relic_socket ].push_back( bonuses[ bonus_idx ].GetUint() );
+        item.parsed.bonus_id.push_back( slot_data[ "bonus_list" ][ bonus_idx ].GetInt() );
       }
     }
 
-    // Blizzard includes both purchased and relic ranks in the same data, so we need to separate
-    // the data so our artifact data is correct.
-    auto relic_id = relic[ "itemId" ].GetUint();
-    auto relic_trait_data = item.player -> dbc.artifact_relic_rank_index( artifact_id, relic_id );
-
-    if ( relic_trait_data.first > 0 && relic_trait_data.second > 0 )
+    if ( slot_data.HasMember( "enchantments" ) )
     {
-      item.player -> artifact -> move_purchased_rank( relic_idx,
-                                                      relic_trait_data.first,
-                                                      relic_trait_data.second );
-    }
-  }
+      for ( auto ench_idx = 0u, end = slot_data[ "enchantments" ].Size(); ench_idx < end; ++ench_idx )
+      {
+        const auto& ench_data = slot_data[ "enchantments" ][ ench_idx ];
 
-  return true;
+        if ( !ench_data.HasMember( "enchantment_id" ) )
+        {
+          throw std::runtime_error( "Unable to parse enchant data: Missing enchantment ID" );
+        }
+        if ( !ench_data.HasMember( "enchantment_slot" ) )
+        {
+          throw std::runtime_error( "Unable to parse enchant data: Missing enchantment slot data" );
+        }
+
+        switch (ench_data[ "enchantment_slot" ][ "id" ].GetInt()) {
+          // PERMANENT
+          case 0:
+            item.parsed.enchant_id = ench_data[ "enchantment_id" ].GetInt();
+            break;
+          // BONUS_SOCKETS
+          case 6:
+            break;
+          // ON_USE_SPELL
+          case 7:
+            item.parsed.addon_id = ench_data[ "enchantment_id" ].GetInt();
+            break;
+        }
+      }
+    }
+
+    if ( slot_data.HasMember( "sockets" ) )
+    {
+      for ( auto gem_idx = 0u, end = slot_data[ "sockets" ].Size(); gem_idx < end; ++gem_idx )
+      {
+        const auto& socket_data = slot_data[ "sockets" ][ gem_idx ];
+        if ( !socket_data.HasMember( "item" ) )
+        {
+          continue;
+        }
+
+        if ( !socket_data[ "item" ].HasMember( "id" ) )
+        {
+          throw std::runtime_error( "Unable to parse socket data: Missing item information" );
+        }
+
+        item.parsed.gem_id[ gem_idx ] = socket_data[ "item" ][ "id" ].GetInt();
+
+        if ( socket_data.HasMember( "bonus_list" ) )
+        {
+          for ( auto gbonus_idx = 0u, end = socket_data[ "bonus_list" ].Size(); gbonus_idx < end; ++gbonus_idx )
+          {
+            item.parsed.gem_bonus_id[ gem_idx ].push_back( socket_data[ "bonus_list" ][ gbonus_idx ].GetInt() );
+          }
+        }
+      }
+    }
+
+    azerite::parse_blizzard_azerite_information( item, slot_data );
+  }
 }
 
-void parse_items( player_t*  p,
-                  const rapidjson::Value& items )
+void parse_media( player_t*            p,
+                  const player_spec_t& spec,
+                  const std::string&   url,
+                  cache::behavior_e    caching )
 {
-  static const char* const slot_map[] =
+  rapidjson::Document media_data;
+
+  if ( spec.local_json.empty() && spec.local_json_media.empty() )
   {
-    "head",
-    "neck",
-    "shoulder",
-    "shirt",
-    "chest",
-    "waist",
-    "legs",
-    "feet",
-    "wrist",
-    "hands",
-    "finger1",
-    "finger2",
-    "trinket1",
-    "trinket2",
-    "back",
-    "mainHand",
-    "offHand",
-    "ranged",
-    "tabard"
-  };
-
-  assert( sizeof_array( slot_map ) == SLOT_MAX );
-
-  for ( unsigned i = 0; i < SLOT_MAX; ++i )
+    if ( !download( p->sim, media_data, p->region_str, url + "&locale=en_US", caching ) )
+    {
+      throw std::runtime_error(fmt::format("Unable to download media JSON from '{}'.", url ));
+    }
+  }
+  else if ( !spec.local_json_media.empty() )
   {
-    item_t& item = p -> items[ i ];
-
-    if ( ! items.HasMember( slot_map[ i ] ) )
-      continue;
-
-    const rapidjson::Value& data = items[ slot_map[ i ] ];
-    if ( ! data.HasMember( "id" ) )
-      continue;
-    else
-      item.parsed.data.id = data[ "id" ].GetUint();
-
-    if ( data.HasMember( "bonusLists" ) )
+    if ( !parse_file( p->sim, spec.local_json_media, media_data ) )
     {
-      for ( rapidjson::SizeType k = 0, n = data[ "bonusLists" ].Size(); k < n; ++k )
-      {
-        item.parsed.bonus_id.push_back( data[ "bonusLists" ][ k ].GetInt() );
-      }
+      throw std::runtime_error( fmt::format( "Unable to parse media information JSON from '{}'.",
+        spec.local_json_media ) );
     }
+  }
 
-    // Since Armory API does not give us the drop level of items (such as quest items), we will need
-    // to implement a hack here. We do this by checking if Blizzard includes a ITEM_BONUS_SCALING_2
-    // type bonus in their bonusLists array, and set the drop level to the player's level. Note that
-    // this may result in incorrect stats if the player attained the item during leveling, but
-    // there's little else we can do, as the "itemLevel" value of the item info is the base ilevel,
-    // which in many cases is very incorrect.
-    if ( item_database::has_item_bonus_type( item, ITEM_BONUS_SCALING_2 ) &&
-         data.HasMember( "itemLevel" ) )
-    {
-      item.option_ilevel_str = util::to_string( data[ "itemLevel" ].GetUint() );
-    }
+  if ( !media_data.IsObject() )
+  {
+    return;
+  }
 
-    azerite::parse_blizzard_azerite_information( item, data );
-
-    if ( !data.HasMember( "tooltipParams" ) )
-      continue;
-
-    const rapidjson::Value& params = data[ "tooltipParams" ];
-
-    if ( params.HasMember( "gem0" ) ) item.parsed.gem_id[ 0 ] = params[ "gem0" ].GetUint();
-    if ( params.HasMember( "gem1" ) ) item.parsed.gem_id[ 1 ] = params[ "gem1" ].GetUint();
-    if ( params.HasMember( "gem2" ) ) item.parsed.gem_id[ 2 ] = params[ "gem2" ].GetUint();
-    if ( params.HasMember( "enchant" ) ) item.parsed.enchant_id = params[ "enchant" ].GetUint();
-    if ( params.HasMember( "tinker" ) ) item.parsed.addon_id = params[ "tinker" ].GetUint();
-    if ( params.HasMember( "suffix" ) ) item.parsed.suffix_id = params[ "suffix" ].GetInt();
-
-    if ( params.HasMember( "upgrade" ) )
-    {
-      const rapidjson::Value& upgrade = params[ "upgrade" ];
-      if ( upgrade.HasMember( "current" ) ) item.parsed.upgrade_level = upgrade[ "current" ].GetUint();
-    }
-
-    // Artifact
-    if ( data.HasMember( "quality" ) && data[ "quality" ].GetUint() == ITEM_QUALITY_ARTIFACT )
-    {
-      // If artifact parsing fails, reset the whole item input
-      if ( ! parse_artifact( item, data ) )
-      {
-        item.parsed = item_t::parsed_input_t();
-      }
-    }
+  if ( media_data.HasMember( "bust_url" ) )
+  {
+    p->report_information.thumbnail_url = media_data[ "bust_url" ].GetString();
   }
 }
 
 // parse_player =============================================================
 
-player_t* parse_player( sim_t*             sim,
-                        player_spec_t&     player,
-                        cache::behavior_e  caching )
+player_t* parse_player( sim_t*            sim,
+                        player_spec_t&    player,
+                        cache::behavior_e caching,
+                        bool              allow_failures = false )
 {
   sim -> current_slot = 0;
 
-  std::string result;
   rapidjson::Document profile;
 
   // China does not have mashery endpoints, so no point in even trying to get anything here
-  if ( util::str_compare_ci( player.region, "cn" ) )
+  if ( player.local_json.empty() )
   {
-    return nullptr;
-  }
-  else if ( player.local_json.empty() )
-  {
-    if ( ! download( sim, profile, result, player.url, player.cleanurl, caching ) )
+    if ( !download( sim, profile, player.region, player.url + "&locale=en_US", caching ) )
     {
       throw std::runtime_error(fmt::format("Unable to download JSON from '{}'.",
-          player.cleanurl ));
+          player.url ));
     }
   }
   else
   {
-    io::ifstream ifs;
-    ifs.open( player.local_json );
-    result.assign( ( std::istreambuf_iterator<char>( ifs ) ),
-                   ( std::istreambuf_iterator<char>()    ) );
+    if ( !parse_file( sim, player.local_json, profile ) )
+    {
+      throw std::runtime_error( fmt::format( "Unable to parse JSON from '{}'.",
+        player.local_json ) );
+    }
   }
 
-  profile.Parse< 0 >(result.c_str());
-
-  if ( profile.HasParseError() )
+  if ( !allow_failures && !check_for_error( sim, profile ) )
   {
-    throw std::runtime_error("Unable to parse JSON." );
-
+    throw std::runtime_error(fmt::format("Unable to download JSON from '{}'.",
+        player.url ));
   }
-
-  if ( sim -> debug )
+  // 200, 403, 404 results are OK, anything else not OK
+  else if ( allow_failures )
   {
-    rapidjson::StringBuffer b;
-    rapidjson::PrettyWriter< rapidjson::StringBuffer > writer( b );
-
-    profile.Accept( writer );
-    sim -> out_debug.raw() << b.GetString();
-  }
-
-  if ( profile.HasMember( "status" ) && util::str_compare_ci( profile[ "status" ].GetString(), "nok" ) )
-  {
-    throw std::runtime_error(fmt::format("Unavailable/Not-OK status: {}",
-                   profile[ "reason" ].GetString() ));
+    auto ret_code = check_for_error( sim, profile, {403, 404} );
+    if ( !ret_code )
+    {
+      throw std::runtime_error(fmt::format("Unable to download JSON from '{}'.",
+          player.url ));
+    }
+    else if ( ret_code == 403 || ret_code == 404 )
+    {
+      return nullptr;
+    }
   }
 
   if ( profile.HasMember( "name" ) )
@@ -440,7 +689,7 @@ player_t* parse_player( sim_t*             sim,
     throw std::runtime_error("Unable to extract player level.");
   }
 
-  if ( ! profile.HasMember( "class" ) )
+  if ( ! profile.HasMember( "character_class" ) )
   {
     throw std::runtime_error("Unable to extract player class.");
   }
@@ -450,13 +699,13 @@ player_t* parse_player( sim_t*             sim,
     throw std::runtime_error("Unable to extract player race.");
   }
 
-  if ( ! profile.HasMember( "talents" ) )
+  if ( ! profile.HasMember( "specializations" ) )
   {
     throw std::runtime_error("Unable to extract player talents.");
   }
 
-  std::string class_name = util::player_type_string( util::translate_class_id( profile[ "class" ].GetUint() ) );
-  race_e race = util::translate_race_id( profile[ "race" ].GetUint() );
+  std::string class_name = util::player_type_string( util::translate_class_id( profile[ "character_class" ][ "id" ].GetUint() ) );
+  race_e race = util::translate_race_id( profile[ "race" ][ "id" ].GetUint() );
   const module_t* module = module_t::get( class_name );
 
   if ( ! module || ! module -> valid() )
@@ -488,25 +737,29 @@ player_t* parse_player( sim_t*             sim,
   if ( ! profile.HasMember( "realm" ) && ! player.server.empty() )
     p -> server_str = player.server;
   else
-    p -> server_str = profile[ "realm" ].GetString();
+    p -> server_str = profile[ "realm" ][ "name" ].GetString();
 
   if ( ! player.origin.empty() )
     p -> origin_str = player.origin;
 
-  if ( profile.HasMember( "thumbnail" ) )
-    p -> report_information.thumbnail_url = "https://render-" + p -> region_str + ".worldofwarcraft.com/character/" +
-                                            + profile[ "thumbnail" ].GetString();
-
-  if ( profile.HasMember( "professions" ) )
+  if ( profile.HasMember( "active_spec" ) && profile[ "active_spec" ].HasMember( "id" ) )
   {
-    parse_professions( p -> professions_str, profile[ "professions" ] );
+    p->_spec = static_cast<specialization_e>( profile[ "active_spec" ][ "id" ].GetInt() );
   }
 
-  parse_talents( p, profile[ "talents" ], player.talent_spec );
-
-  if ( profile.HasMember( "items" ) )
+  if ( profile.HasMember( "media" ) && profile[ "media" ].HasMember( "href" ) )
   {
-    parse_items( p, profile[ "items" ] );
+    parse_media( p, player, profile[ "media" ][ "href" ].GetString(), caching );
+  }
+
+  if ( profile.HasMember( "specializations" ) )
+  {
+    parse_talents( p, player, profile[ "specializations" ][ "href" ].GetString(), caching );
+  }
+
+  if ( profile.HasMember( "equipment" ) )
+  {
+    parse_items( p, player, profile[ "equipment" ][ "href" ].GetString(), caching );
   }
 
   if ( ! p -> server_str.empty() )
@@ -522,7 +775,7 @@ player_t* parse_player( sim_t*             sim,
 bool download_item_data( item_t& item, cache::behavior_e caching )
 {
   rapidjson::Document js;
-  if ( ! download_id( item.sim, js, item.player -> region_str, item.parsed.data.id, item.sim -> apikey, caching ) ||
+  if ( ! download_item( item.sim, js, item.player -> region_str, item.parsed.data.id, caching ) ||
        js.HasParseError() )
   {
     if ( caching != cache::ONLY )
@@ -733,21 +986,16 @@ bool download_roster( rapidjson::Document& d,
                       cache::behavior_e  caching )
 {
   std::string url;
-  std::string cleanurl;
-  if ( sim -> apikey.size() == 32 && region != "cn" ) //China does not have new api endpoints yet.
+  if ( !util::str_compare_ci( region, "cn" ) )
   {
-    cleanurl = "https://" + region + ".api.battle.net/wow/guild/" + server + '/' + name + "?fields=members&apikey=";
-    url = cleanurl + sim -> apikey;
+    url = fmt::format( GLOBAL_GUILD_ENDPOINT_URI, region, server, name, LOCALES[ region ].first );
   }
   else
   {
-    url = "http://" + region + ".battle.net/api/wow/guild/" + server + '/' +
-      name + "?fields=members";
-    cleanurl = url;
+    url = fmt::format( CHINA_GUILD_ENDPOINT_URI, server, name );
   }
 
-  std::string result;
-  if ( ! download( sim, d, result, url, cleanurl, caching ) )
+  if ( ! download( sim, d, region, url, caching ) )
   {
     return false;
   }
@@ -755,7 +1003,7 @@ bool download_roster( rapidjson::Document& d,
   if ( d.HasParseError() )
   {
     sim -> errorf( "BCP API: Unable to parse guild from '%s': Parse error '%s' @ %lu\n",
-      cleanurl.c_str(), d.GetParseError(), d.GetErrorOffset() );
+      url.c_str(), d.GetParseError(), d.GetErrorOffset() );
 
     return false;
   }
@@ -774,6 +1022,40 @@ bool download_roster( rapidjson::Document& d,
 
 } // close anonymous namespace ==============================================
 
+// bcp_api::translate_api_slot ==============================================
+
+slot_e bcp_api::translate_api_slot( const std::string& slot_str )
+{
+  static const std::unordered_map<std::string, slot_e> slot_map = {
+    { "HEAD",      SLOT_HEAD      },
+    { "NECK",      SLOT_NECK      },
+    { "SHOULDER",  SLOT_SHOULDERS },
+    { "SHIRT",     SLOT_SHIRT     },
+    { "CHEST",     SLOT_CHEST     },
+    { "WAIST",     SLOT_WAIST     },
+    { "LEGS",      SLOT_LEGS      },
+    { "FEET",      SLOT_FEET      },
+    { "WRIST",     SLOT_WRISTS    },
+    { "HANDS",     SLOT_HANDS     },
+    { "FINGER_1",  SLOT_FINGER_1  },
+    { "FINGER_2",  SLOT_FINGER_2  },
+    { "TRINKET_1", SLOT_TRINKET_1 },
+    { "TRINKET_2", SLOT_TRINKET_2 },
+    { "BACK",      SLOT_BACK      },
+    { "MAIN_HAND", SLOT_MAIN_HAND },
+    { "OFF_HAND",  SLOT_OFF_HAND  },
+    { "TABARD",    SLOT_TABARD    }
+  };
+
+  auto it = slot_map.find( slot_str );
+  if ( it == slot_map.end() )
+  {
+    return SLOT_INVALID;
+  }
+
+  return it->second;
+}
+
 // bcp_api::download_player =================================================
 
 player_t* bcp_api::download_player( sim_t*             sim,
@@ -781,78 +1063,117 @@ player_t* bcp_api::download_player( sim_t*             sim,
                                     const std::string& server,
                                     const std::string& name,
                                     const std::string& talents,
-                                    cache::behavior_e  caching )
+                                    cache::behavior_e  caching,
+                                    bool               allow_failures )
 {
   sim -> current_name = name;
 
   player_spec_t player;
-  bool use_new_endpoints = (region != "cn"); // China does not have new api endpoints yet.
 
-  if (use_new_endpoints && sim -> apikey.size() != 32)
+  std::vector<std::string::value_type> chars { name.begin(), name.end() };
+  chars.push_back( 0 );
+
+  utf8lwr( reinterpret_cast<void*>( chars.data() ) );
+
+  auto normalized_name = std::string { chars.begin(), chars.end() };
+  util::urlencode( normalized_name );
+
+  auto normalized_server = server;
+  util::tolower( normalized_server );
+
+  if ( !util::str_compare_ci( region, "cn" ) )
   {
-    throw std::runtime_error("No valid api key available. Cannot download from armory. See https://github.com/simulationcraft/simc/wiki/BattleArmoryAPI" );
+    player.url = fmt::format( GLOBAL_PLAYER_ENDPOINT_URI, region, normalized_server, normalized_name, region, LOCALES[ region ].first );
+    player.origin = fmt::format( GLOBAL_ORIGIN_URI, LOCALES[ region ].second, normalized_server, normalized_name );
+  }
+  else
+  {
+    player.url = fmt::format( CHINA_PLAYER_ENDPOINT_URI, normalized_server, normalized_name );
+    player.origin = fmt::format( CHINA_ORIGIN_URI, normalized_server, normalized_name );
   }
 
-  if ( use_new_endpoints )
-  {
-    std::string battlenet = "https://" + region + ".api.battle.net/";
-    std::string origin_prefix = "https://" + region + ".battle.net/";
-
-    player.cleanurl = battlenet + "wow/character/" +
-      server + '/' + name + "?fields=talents,items,professions&locale=en_US&apikey=";
-    player.url = player.cleanurl + sim -> apikey;
-    player.origin = origin_prefix + "wow/character/" + server + '/' + name + "/advanced";
 #ifdef SC_DEFAULT_APIKEY
-  if ( sim -> apikey == std::string( SC_DEFAULT_APIKEY ) )
-  //This is needed to prevent hitting the 'per second' api call limit.
-  // If the character is cached, it still counts as a api use, even though we don't download anything.
-  // With cached characters, it's common for 30-40 calls to be made per second when downloading a guild.
-  // This is only enabled when the person is using the default apikey.
+  if ( sim->apikey == std::string( SC_DEFAULT_APIKEY ) )
+//This is needed to prevent hitting the 'per second' api call limit.
+// If the character is cached, it still counts as a api use, even though we don't download anything.
+// With cached characters, it's common for 30-40 calls to be made per second when downloading a guild.
+// This is only enabled when the person is using the default apikey.
 #if defined ( SC_WINDOWS )
     _sleep( 250 );
 #else
     usleep( 250000 );
 #endif
 #endif
-  }
-  else
-  {
-    std::string battlenet = "http://" + region + ".battle.net/";
-
-    player.url = battlenet + "api/wow/character/" +
-      server + '/' + name + "?fields=talents,items,professions&locale=en_US";
-    player.cleanurl = player.url;
-    player.origin = battlenet + "wow/en/character/" + server + '/' + name + "/advanced";
-  }
 
   player.region = region;
   player.server = server;
   player.name = name;
-
   player.talent_spec = talents;
 
-  return parse_player( sim, player, caching );
+  return parse_player( sim, player, caching, allow_failures );
 }
 
 // bcp_api::from_local_json =================================================
 
 player_t* bcp_api::from_local_json( sim_t*             sim,
                                     const std::string& name,
-                                    const std::string& file_path,
+                                    const std::string& value,
                                     const std::string& talents
                                   )
 {
-  sim -> current_name = name;
+  player_spec_t player_spec;
 
-  player_spec_t player;
+  player_spec.origin = value;
 
-  player.local_json = file_path;
-  player.origin = file_path;
+  std::vector<std::unique_ptr<option_t>> options;
+  options.push_back( opt_string( "spec", player_spec.local_json_spec ) );
+  options.push_back( opt_string( "equipment", player_spec.local_json_equipment ) );
+  options.push_back( opt_string( "media", player_spec.local_json_media ) );
 
-  player.name = name;
-  player.talent_spec = talents;
+  std::string options_str;
+  auto first_comma = value.find( ',' );
+  if ( first_comma != std::string::npos )
+  {
+    player_spec.local_json = value.substr( 0, first_comma );
+    options_str = value.substr( first_comma + 1 );
+  }
+  else
+  {
+    player_spec.local_json = value;
+  }
 
-  return parse_player( sim, player, cache::ANY );
+  try
+  {
+    opts::parse( sim, "local_json", options, options_str,
+      [ sim ]( opts::parse_status status, const std::string& name, const std::string& value ) {
+        // Fail parsing if strict parsing is used and the option is not found
+        if ( sim->strict_parsing && status == opts::parse_status::NOT_FOUND )
+        {
+          return opts::parse_status::FAILURE;
+        }
+
+        // .. otherwise, just warn that there's an unknown option
+        if ( status == opts::parse_status::NOT_FOUND )
+        {
+          sim->error( "Warning: Unknown local_json option '{}' with value '{}', ignoring",
+            name, value );
+        }
+
+        return status;
+      } );
+  }
+  catch ( const std::exception& )
+  {
+    std::throw_with_nested( std::invalid_argument(
+      fmt::format( "Cannot parse option from '{}'", options_str ) ) );
+  }
+
+  player_spec.name = name;
+  player_spec.talent_spec = talents;
+
+  sim->current_name = name;
+
+  return parse_player( sim, player_spec, cache::ANY );
 }
 
 // bcp_api::download_item() =================================================
@@ -890,8 +1211,24 @@ bool bcp_api::download_guild( sim_t* sim,
 {
   rapidjson::Document js;
 
-  if ( ! download_roster( js, sim, region, server, name, caching ) )
+  std::vector<std::string::value_type> chars { name.begin(), name.end() };
+  chars.push_back( 0 );
+
+  utf8lwr( reinterpret_cast<void*>( chars.data() ) );
+
+  auto normalized_name = std::string { chars.begin(), chars.end() };
+  util::urlencode( normalized_name );
+
+  auto normalized_server = server;
+  util::tolower( normalized_server );
+
+  if ( ! download_roster( js, sim, region, normalized_server, normalized_name, caching ) )
     return false;
+
+  if ( !check_for_error( sim, js ) )
+  {
+    return false;
+  }
 
   if ( ! js.HasMember( "members" ) )
   {
@@ -930,7 +1267,7 @@ bool bcp_api::download_guild( sim_t* sim,
          player_filter != util::translate_class_id( character[ "class" ].GetInt() ) )
       continue;
 
-    names.push_back( character[ "name" ].GetString() );
+    names.emplace_back(character[ "name" ].GetString() );
   }
 
   if ( names.empty() ) return true;
@@ -939,10 +1276,62 @@ bool bcp_api::download_guild( sim_t* sim,
 
   for (auto & cname : names)
   {
-    
     std::cout << "Downloading character: " << cname << std::endl;
-    download_player( sim, region, server, cname, "active", caching );
+    download_player( sim, region, server, cname, "active", caching, true );
   }
 
   return true;
 }
+
+#ifndef SC_NO_NETWORKING
+void bcp_api::token_load()
+{
+  for ( auto& path : token_paths() )
+  {
+    io::ifstream file;
+
+    file.open( path );
+    if ( !file.is_open() )
+    {
+      continue;
+    }
+
+    std::getline( file, token );
+    token_path = path;
+    break;
+  }
+}
+
+void bcp_api::token_save()
+{
+  if ( token.empty() )
+  {
+    return;
+  }
+
+  // Token path is empty, so grab the least-preferred default path for the file
+  if ( token_path.empty() )
+  {
+    token_path = token_paths().back();
+  }
+
+  io::ofstream file;
+  file.exceptions( std::ios::failbit | std::ios::badbit );
+
+  try
+  {
+    file.open( token_path );
+    if ( !file.is_open() )
+    {
+      return;
+    }
+
+    file << token;
+  }
+  catch ( const std::exception& )
+  {
+    std::cerr << "[Warning] Unable to cache Blizzard API bearer token to " << token_path << ": " <<
+      strerror(errno) << std::endl;
+  }
+}
+#endif

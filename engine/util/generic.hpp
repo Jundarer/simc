@@ -17,7 +17,7 @@
 #include <cassert>
 #include <cmath>
 #include <type_traits>
-#include "utf8.h"
+#include "utf8-cpp/utf8.h"
 
 // Type traits and metaprogramming tools ====================================
 
@@ -354,6 +354,23 @@ inline typename range::traits<Range>::iterator find_if( Range& r,
                                                         UnaryPredicate p )
 {
   return std::find_if( range::begin( r ), range::end( r ), p );
+}
+
+template <typename Range, typename UnaryPredicate>
+inline bool any_of( Range& r, UnaryPredicate p )
+{
+  return std::any_of( range::begin( r ), range::end( r ), p );
+}
+
+/**
+ * Check if a value is contained in a range
+ *
+ * Equal to std::any_of with equality predicate, or std::find with checking for end of range.
+ */
+template <typename Range, typename Value>
+inline bool contains_value( Range& r, Value v )
+{
+  return std::find( range::begin( r ), range::end( r ), v ) != range::end( r );
 }
 
 template <typename Range, typename F>

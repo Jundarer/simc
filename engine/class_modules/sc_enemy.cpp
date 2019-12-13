@@ -55,33 +55,33 @@ struct enemy_t : public player_t
     combat_reach = 4.0;
   }
 
-  virtual role_e primary_role() const override
+  role_e primary_role() const override
   { return ROLE_TANK; }
 
-  virtual resource_e primary_resource() const override
+  resource_e primary_resource() const override
   { return RESOURCE_HEALTH; }
 
-  virtual action_t* create_action( const std::string& name, const std::string& options_str ) override;
+  action_t* create_action( const std::string& name, const std::string& options_str ) override;
   void init_race() override;
-  virtual void init_base_stats() override;
-  virtual void init_defense() override;
-  virtual void create_buffs() override;
-  virtual void init_resources( bool force = false ) override;
-  virtual void init_target() override;
+  void init_base_stats() override;
+  void init_defense() override;
+  void create_buffs() override;
+  void init_resources( bool force = false ) override;
+  void init_target() override;
   virtual std::string generate_action_list();
-  virtual void init_action_list() override;
-  virtual void init_stats() override;
-  virtual double resource_loss( resource_e, double, gain_t*, action_t* ) override;
-  virtual void create_options() override;
-  virtual pet_t* create_pet( const std::string& add_name, const std::string& pet_type = std::string() ) override;
-  virtual void create_pets() override;
-  virtual double health_percentage() const override;
-  virtual void combat_begin() override;
-  virtual void combat_end() override;
+  void init_action_list() override;
+  void init_stats() override;
+  double resource_loss( resource_e, double, gain_t*, action_t* ) override;
+  void create_options() override;
+  pet_t* create_pet( const std::string& add_name, const std::string& pet_type = std::string() ) override;
+  void create_pets() override;
+  double health_percentage() const override;
+  void combat_begin() override;
+  void combat_end() override;
   virtual void recalculate_health();
-  virtual void demise() override;
-  virtual expr_t* create_expression( const std::string& type ) override;
-  virtual timespan_t available() const override { return waiting_time; }
+  void demise() override;
+  std::unique_ptr<expr_t> create_expression( const std::string& type ) override;
+  timespan_t available() const override { return waiting_time; }
 
   void actor_changed() override
   {
@@ -103,7 +103,7 @@ struct enemy_t : public player_t
     } );
   }
 
-  virtual bool taunt( player_t* source ) override;
+  bool taunt( player_t* source ) override;
 };
 
 
@@ -113,8 +113,8 @@ struct enemy_t : public player_t
 template <typename ACTION_TYPE>
 struct enemy_action_t : public ACTION_TYPE
 {
-  typedef ACTION_TYPE action_type_t;
-  typedef enemy_action_t<ACTION_TYPE> base_t;
+  using action_type_t = ACTION_TYPE;
+  using base_t = enemy_action_t<ACTION_TYPE>;
 
   bool apply_debuff;
   std::string dmg_type_override;
@@ -293,8 +293,8 @@ struct enemy_action_t : public ACTION_TYPE
 template <typename CHILD_ACTION_TYPE>
 struct enemy_action_driver_t : public CHILD_ACTION_TYPE
 {
-  typedef CHILD_ACTION_TYPE child_action_type_t;
-  typedef enemy_action_driver_t<CHILD_ACTION_TYPE> base_t;
+  using child_action_type_t = CHILD_ACTION_TYPE;
+  using base_t = enemy_action_driver_t<CHILD_ACTION_TYPE>;
  
   int aoe_tanks;
   std::vector<child_action_type_t*> ch_list;
@@ -487,7 +487,7 @@ struct auto_attack_t : public enemy_action_t<attack_t>
       p -> main_hand_attack = mh_list[ 0 ];
   }
 
-  virtual void set_name_string() override
+  void set_name_string() override
   {
     if ( mh_list.size() > 1 )
       this -> name_str = this -> name_str + "_tanks";
@@ -519,14 +519,14 @@ struct auto_attack_t : public enemy_action_t<attack_t>
     }
   }
 
-  virtual void execute() override
+  void execute() override
   {
     player -> main_hand_attack = mh_list[ 0 ];
     for (size_t i = 0; i < mh_list.size(); i++ )
       mh_list[ i ] -> schedule_execute();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( player -> is_moving() || ! player -> main_hand_attack ) return false;
     if ( !base_t::ready() ) return false;
@@ -602,7 +602,7 @@ struct auto_attack_off_hand_t : public enemy_action_t<attack_t>
     }
   }
 
-  virtual void execute() override
+  void execute() override
   {
     player -> off_hand_attack = oh_list[ 0 ];
     for ( size_t i = 0; i < oh_list.size(); i++ )
@@ -613,7 +613,7 @@ struct auto_attack_off_hand_t : public enemy_action_t<attack_t>
 
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( player -> is_moving() ) return false;
     return( player -> off_hand_attack -> execute_event == nullptr ); // not swinging
@@ -745,7 +745,7 @@ struct spell_dot_t : public enemy_action_t<spell_t>
     }
   }
 
-  virtual void execute() override
+  void execute() override
   {
     target_cache.is_valid = false;
 
@@ -766,7 +766,7 @@ struct spell_dot_driver_t : public enemy_action_driver_t<spell_dot_t>
     parse_options( options_str );
   }
 
-  virtual void schedule_execute( action_state_t* s ) override
+  void schedule_execute( action_state_t* s ) override
   {
     target_cache.is_valid = false;
     enemy_action_driver_t<spell_dot_t>::schedule_execute( s );
@@ -862,14 +862,14 @@ struct summon_add_t : public spell_t
     trigger_gcd = timespan_t::from_seconds( 1.5 );
   }
 
-  virtual void execute() override
+  void execute() override
   {
     spell_t::execute();
 
     player -> summon_pet( add_name, summoning_duration );
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( ! pet -> is_sleeping() )
       return false;
@@ -902,7 +902,7 @@ struct add_t : public pet_t
     true_level = s -> max_player_level + 3;
   }
 
-  virtual void init_action_list() override
+  void init_action_list() override
   {
     if ( action_list_str.empty() )
     {
@@ -930,7 +930,7 @@ struct add_t : public pet_t
     return remainder / divisor * 100.0;
   }
 
-  virtual timespan_t time_to_percent( double percent ) const override
+  timespan_t time_to_percent( double percent ) const override
   {
     if ( duration > timespan_t::zero() )
     {
@@ -943,10 +943,10 @@ struct add_t : public pet_t
       return pet_t::time_to_percent( percent );
   }
 
-  virtual resource_e primary_resource() const override
+  resource_e primary_resource() const override
   { return RESOURCE_HEALTH; }
 
-  virtual action_t* create_action( const std::string& name,
+  action_t* create_action( const std::string& name,
                                    const std::string& options_str ) override
   {
     action_t* a = enemy_create_action( this, name, options_str );
@@ -971,7 +971,7 @@ struct heal_enemy_t : public enemy_t
     true_level = s -> max_player_level; // set to default player level, not default+3
   }
 
-  virtual void init_resources( bool /* force */ ) override
+  void init_resources( bool /* force */ ) override
   {
     resources.base[ RESOURCE_HEALTH ] = 20000000.0;
 
@@ -980,7 +980,7 @@ struct heal_enemy_t : public enemy_t
     resources.current[ RESOURCE_HEALTH ] = resources.base[ RESOURCE_HEALTH ] / 1.5;
   }
 
-  virtual void init_base_stats() override
+  void init_base_stats() override
   {
     enemy_t::init_base_stats();
 
@@ -988,7 +988,7 @@ struct heal_enemy_t : public enemy_t
 
     true_level = std::min( 100, true_level );
   }
-  virtual resource_e primary_resource() const override
+  resource_e primary_resource() const override
   { return RESOURCE_HEALTH; }
 
 //  void init_action_list()
@@ -1134,6 +1134,32 @@ struct tank_dummy_enemy_t : public enemy_t
       tank_dummy_enum = static_cast<tank_dummy_e>( TANK_DUMMY_MAX - 1 );
   }
 
+  void init_defense() override
+  {
+    enemy_t::init_defense();
+
+    double dummy_armor_coeff = dbc.armor_mitigation_constant( level() );
+
+    // Max level enemies have different K values based on difficulty, changes when new tier is released and not provided in spelldata
+    // 8.1 and 8.1.5 (BoD + Crucible) K values here
+    switch ( tank_dummy_enum )
+    {
+      case TANK_DUMMY_DUNGEON:
+        dummy_armor_coeff = 8467.2;
+        break;
+      case TANK_DUMMY_RAID:
+        dummy_armor_coeff = 9355.5;
+        break;
+      case TANK_DUMMY_MYTHIC:
+        dummy_armor_coeff = 11478.6;
+        break;
+      default:
+        break;
+    }
+    
+    initial.armor_coeff = dummy_armor_coeff;
+  }
+
   void init_base_stats() override
   {
     enemy_t::init_base_stats();
@@ -1142,11 +1168,13 @@ struct tank_dummy_enemy_t : public enemy_t
     switch ( tank_dummy_enum )
     {
       case TANK_DUMMY_DUNGEON:
-        true_level = 102; break;
+        true_level = sim -> max_player_level + 2;
+        break;
       case TANK_DUMMY_WEAK:
-        true_level = 100; break;
+        true_level = sim -> max_player_level;
+        break;
       default:
-        true_level = 103;
+        true_level = sim -> max_player_level + 3;
     }
 
     // override race
@@ -1156,20 +1184,15 @@ struct tank_dummy_enemy_t : public enemy_t
   std::string generate_action_list() override
   {
     std::string als = "";
-    int aa_damage[ 5 ] = { 0, 200, 1500, 5000, 7000 };
-    int aa_damage_var[ 5 ] = { 0, 0, 300, 1000, 1400 };
-    int dummy_strike_damage[ 5 ] = { 0, 0, 50, 50, 50 }; // % weapon damage multipliers for dummy_strike
-    int uber_strike_damage[ 5 ] = { 0, 0, 0, 0, 50 }; // % weapon damage multipliers for uber_strike
+    int aa_damage[ 5 ] = { 0, 48000, 90000, 120000, 240000 }; // NONE, WEAK, DUNGEON, RAID, MYTHIC
+    int aa_damage_var[ 5 ] = { 0, 4800, 9000, 12000, 24000 };
+    int dummy_strike_damage[ 5 ] = { 0, 80000, 150000, 200000, 400000 }; // Base melee nuke damage
 
     als += "/auto_attack,damage=" + util::to_string( aa_damage[ tank_dummy_enum ] ) + ",range=" + util::to_string( aa_damage_var[ tank_dummy_enum ] ) + ",attack_speed=1.5,aoe_tanks=1";
-    if ( tank_dummy_enum > TANK_DUMMY_WEAK )
-      als += "/melee_nuke,damage=" + util::to_string( aa_damage[ tank_dummy_enum ] * dummy_strike_damage[ tank_dummy_enum ] / 100 ) + ",range=" + util::to_string( aa_damage_var[ tank_dummy_enum ] * dummy_strike_damage[ tank_dummy_enum ] / 100 ) + "attack_speed=0,cooldown=6,aoe_tanks=1";
-    if ( tank_dummy_enum > TANK_DUMMY_RAID )
-      als += "/spell_nuke,damage=" + util::to_string( aa_damage[ tank_dummy_enum ] * uber_strike_damage[ tank_dummy_enum ] / 100 ) + ",range=" + util::to_string( aa_damage_var[ tank_dummy_enum ] * uber_strike_damage[ tank_dummy_enum ] / 100 ) + "attack_speed=1,cooldown=10,aoe_tanks=1,apply_debuff=5";
+    als += "/melee_nuke,damage=" + util::to_string( dummy_strike_damage[ tank_dummy_enum ] ) + ",range=0,attack_speed=2,cooldown=30,aoe_tanks=1";
 
     return als;
   }
-
 };
 
 // enemy_t::create_action ===================================================
@@ -1265,117 +1288,8 @@ void enemy_t::init_defense()
   {
     double& a = initial.stats.armor;
 
-    // a wild equation appears. It's super effective.
-    switch ( level() )
-    {
-      case 1: a = 36; break;
-      case 2: a = 46; break;
-      case 3: a = 51; break;
-      case 4: a = 54; break;
-      case 5: a = 57; break;
-      case 6: a = 64; break;
-      case 7: a = 71; break;
-      case 8: a = 84; break;
-      case 9: a = 90; break;
-      case 10: a = 93; break;
-      case 11: a = 97; break;
-      case 12: a = 104; break;
-      case 13: a = 117; break;
-      case 14: a = 129; break;
-      case 15: a = 131; break;
-      case 16: a = 138; break;
-      case 17: a = 141; break;
-      case 18: a = 144; break;
-      case 19: a = 145; break;
-      case 20: a = 146; break;
-      case 21: a = 160; break;
-      case 22: a = 173; break;
-      case 23: a = 185; break;
-      case 24: a = 191; break;
-      case 25: a = 201; break;
-      case 26: a = 208; break;
-      case 27: a = 214; break;
-      case 28: a = 219; break;
-      case 29: a = 220; break;
-      case 30: a = 234; break;
-      case 31: a = 240; break;
-      case 32: a = 252; break;
-      case 33: a = 258; break;
-      case 34: a = 267; break;
-      case 35: a = 276; break;
-      case 36: a = 279; break;
-      case 37: a = 284; break;
-      case 38: a = 295; break;
-      case 39: a = 304; break;
-      case 40: a = 309; break;
-      case 41: a = 313; break;
-      case 42: a = 318; break;
-      case 43: a = 325; break;
-      case 90: a = 794; break; // checked
-      case 91: a = 504; break;
-      case 92: a = 571; break;
-      case 93: a = 646; break;
-      case 94: a = 731; break;
-      case 95: a = 827; break;
-      case 96: a = 936; break;
-      case 97: a = 1059; break;
-      case 98: a = 1199; break;
-      case 99: a = 1357; break;
-      case 100: a = 925; break; //checked
-      case 101: a = 958; break;
-      case 102: a = 990; break; // checked
-      case 103: a = 1025; break; // checked
-      case 104: a = 1027; break;
-      case 105: a = 1029; break;
-      case 106: a = 1031; break;
-      case 107: a = 1032; break;
-      case 108: a = 1033; break; // checked
-      case 109: a = 1053; break; // checked
-      case 110: a = 1076; break; // checked
-      case 111: a = 1364; break; // checked
-      case 112: a = 1434; break; // checked
-      case 113: a = 1515; break; // checked
-      case 114: a = 1605; break; // checked
-      case 115: a = 1693; break; // checked
-      case 116: a = 1780; break; // checked
-      case 117: a = 1885; break; // checked
-      case 118: a = 2008; break; // checked
-      case 119: a = 2121; break; // checked
-      case 120: a = 3336; break; // checked
-      case 121: a = 3336; break; // checked
-      case 122: a = 3336; break; // checked
-      case 123: a = 3336; break; // checked
-      default: a = std::floor(0.006464588162215 * std::exp(0.123782410252464 * level()) + 0.5); break;
-    }
+    a = dbc.npc_armor_value( level() );
   }
-
-  // for future reference, the equations above fit the given values
-  // in the first colum table below. These numbers are magically accurate.
-  // Level  P/W/R   Mage
-  //   90     445    403
-  //   91     504    457
-  //   92     571    517
-  //   93     646    585
-  //   94     731    662
-  //   95     827    749
-  //   96     936    847
-  //   97    1059    959
-  //   98    1199   1086
-  //   99    1357   1129
-  //  100    1536   1229    
-  //  101    2313   1850
-  //  102    2388   1911
-  //  103    2467   1974
-  //  104    2550   2041
-  //  105    2638   2110
-  //  106    2729   2184
-  //  107    2826   2261
-  //  108    2927   2342
-  //  109    3035   2428
-  //  110    3144   2516
-  //  111    3254   2604
-  //  112    3364   2692
-  //  113    3474   2779
 }
 
 // enemy_t::init_buffs ======================================================
@@ -1385,7 +1299,7 @@ void enemy_t::create_buffs()
   player_t::create_buffs();
 
   for ( unsigned int i = 1; i <= 10; ++ i )
-    buffs_health_decades.push_back( buff_creator_t( this, "Health Decade (" + util::to_string( ( i - 1 ) * 10 ) + " - " + util::to_string( i * 10 ) + ")" ) );
+    buffs_health_decades.push_back( make_buff( this, "Health Decade (" + util::to_string( ( i - 1 ) * 10 ) + " - " + util::to_string( i * 10 ) + ")" ) );
 }
 
 // enemy_t::init_resources ==================================================
@@ -1442,14 +1356,10 @@ void enemy_t::init_target()
 std::string enemy_t::generate_action_list()
 {
   std::string als = "";
-  double level_mult = sim -> dbc.combat_rating( RATING_MELEE_CRIT, sim -> max_player_level ) / sim -> dbc.combat_rating( RATING_MELEE_CRIT, 100 );
-  level_mult = std::pow( level_mult, 0.16 );
 
   // this is the standard Fluffy Pillow action list
-  als += "/auto_attack,damage=" + util::to_string( 80 * level_mult ) + ",attack_speed=2,aoe_tanks=1";
-  als += "/spell_dot,damage=" + util::to_string( 320 * level_mult ) + ",tick_time=2,dot_duration=20,cooldown=40,aoe_tanks=1,if=!ticking";
-  als += "/spell_nuke,damage=" + util::to_string( 120 * level_mult ) + ",cooldown=35,attack_speed=2,aoe_tanks=1";
-  als += "/melee_nuke,damage=" + util::to_string( 240 * level_mult ) + ",cooldown=27,attack_speed=2,aoe_tanks=1";
+  als += "/auto_attack,damage=24000,attack_speed=1.5,aoe_tanks=1,range=" + util::to_string( 2400 );
+  als += "/melee_nuke,damage=40000,cooldown=30,attack_speed=2.0,aoe_tanks=1";
 
   return als;
 }
@@ -1689,7 +1599,7 @@ bool enemy_t::taunt( player_t* source )
 
 // enemy_t::create_expression ===============================================
 
-expr_t* enemy_t::create_expression( const std::string& name_str )
+std::unique_ptr<expr_t> enemy_t::create_expression( const std::string& name_str )
 {
   if ( name_str == "adds" )
     return make_mem_fn_expr( name_str, active_pets, &std::vector<pet_t*>::size );
@@ -1722,7 +1632,7 @@ expr_t* enemy_t::create_expression( const std::string& name_str )
         }
       };
 
-      return new current_target_name_expr_t( this );
+      return std::make_unique<current_target_name_expr_t>( this );
 
     }
     else if ( splits.size() == 3 && splits[ 1 ] == "debuff" )
@@ -1750,7 +1660,7 @@ expr_t* enemy_t::create_expression( const std::string& name_str )
         }
       };
 
-      return new current_target_debuff_expr_t( this, splits[ 2 ] );
+      return std::make_unique<current_target_debuff_expr_t>( this, splits[ 2 ] );
 
     }
 
@@ -1802,7 +1712,7 @@ public:
     ( void ) p;
   }
 
-  virtual void html_customsection( report::sc_html_stream& /* os*/ ) override
+  void html_customsection( report::sc_html_stream& /* os*/ ) override
   {
     /*// Custom Class Section
     os << "\t\t\t\t<div class=\"player-section custom_section\">\n"
@@ -1823,16 +1733,16 @@ struct enemy_module_t : public module_t
 {
   enemy_module_t() : module_t( ENEMY ) {}
 
-  virtual player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
+  player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
   {
     auto  p = new enemy_t( sim, name );
     p -> report_extension = std::unique_ptr<player_report_extension_t>( new enemy_report_t( *p ) );
     return p;
   }
-  virtual bool valid() const override { return true; }
-  virtual void init        ( player_t* ) const override {}
-  virtual void combat_begin( sim_t* ) const override {}
-  virtual void combat_end  ( sim_t* ) const override {}
+  bool valid() const override { return true; }
+  void init        ( player_t* ) const override {}
+  void combat_begin( sim_t* ) const override {}
+  void combat_end  ( sim_t* ) const override {}
 };
 
 // HEAL ENEMY MODULE INTERFACE ==============================================
@@ -1841,15 +1751,15 @@ struct heal_enemy_module_t : public module_t
 {
   heal_enemy_module_t() : module_t( HEALING_ENEMY ) {}
 
-  virtual player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
+  player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
   {
     auto  p = new heal_enemy_t( sim, name );
     return p;
   }
-  virtual bool valid() const override { return true; }
-  virtual void init        ( player_t* ) const override {}
-  virtual void combat_begin( sim_t* ) const override {}
-  virtual void combat_end  ( sim_t* ) const override {}
+  bool valid() const override { return true; }
+  void init        ( player_t* ) const override {}
+  void combat_begin( sim_t* ) const override {}
+  void combat_end  ( sim_t* ) const override {}
 };
 
 // TMI ENEMY MODULE INTERFACE ==============================================
@@ -1858,15 +1768,15 @@ struct tmi_enemy_module_t : public module_t
 {
   tmi_enemy_module_t() : module_t( TMI_BOSS ) {}
 
-  virtual player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
+  player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
   {
     auto  p = new tmi_enemy_t( sim, name );
     return p;
   }
-  virtual bool valid() const override { return true; }
-  virtual void init        ( player_t* ) const override {}
-  virtual void combat_begin( sim_t* ) const override {}
-  virtual void combat_end  ( sim_t* ) const override {}
+  bool valid() const override { return true; }
+  void init        ( player_t* ) const override {}
+  void combat_begin( sim_t* ) const override {}
+  void combat_end  ( sim_t* ) const override {}
 };
 
 // TANK DUMMY ENEMY MODULE INTERFACE ==============================================
@@ -1875,15 +1785,15 @@ struct tank_dummy_enemy_module_t : public module_t
 {
   tank_dummy_enemy_module_t() : module_t( TANK_DUMMY ) {}
 
-  virtual player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
+  player_t* create_player( sim_t* sim, const std::string& name, race_e /* r = RACE_NONE */ ) const override
   {
     auto  p = new tank_dummy_enemy_t( sim, name );
     return p;
   }
-  virtual bool valid() const override { return true; }
-  virtual void init        ( player_t* ) const override {}
-  virtual void combat_begin( sim_t* ) const override {}
-  virtual void combat_end  ( sim_t* ) const override {}
+  bool valid() const override { return true; }
+  void init        ( player_t* ) const override {}
+  void combat_begin( sim_t* ) const override {}
+  void combat_end  ( sim_t* ) const override {}
 };
 
 } // END UNNAMED NAMESPACE

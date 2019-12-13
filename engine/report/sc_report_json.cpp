@@ -116,7 +116,9 @@ void gains_to_json( JsonOutput root, const player_t& p )
 void to_json( JsonOutput root, const buff_t* b )
 {
   root[ "name" ] = b -> name();
-  add_non_zero( root, "spell", b -> data().id() );
+  root[ "spell_name" ] = b->data_reporting().name_cstr();
+  root[ "spell_school" ] = util::school_type_string( b->data_reporting().get_school_type());
+  add_non_zero( root, "spell", b -> data_reporting().id() );
   if ( b -> item )
   {
     root[ "item" ][ "id" ] = b -> item -> parsed.data.id;
@@ -162,6 +164,18 @@ void buffs_to_json( JsonOutput root, const player_t& p )
     to_json( root.add(), b );
   } );
 }
+void constant_buffs_to_json( JsonOutput root, const player_t& p )
+{
+  root.make_array();
+  // constant buffs
+  range::for_each( p.report_information.constant_buffs, [ &root]( const buff_t* b ) {
+    if ( b -> avg_start.sum() == 0 )
+    {
+      return;
+    }
+    to_json( root.add(), b );
+  } );
+}
 
 void to_json( JsonOutput root, const stats_t::stats_results_t& sr )
 {
@@ -191,18 +205,87 @@ void procs_to_json( JsonOutput root, const player_t& p )
   } );
 }
 
-void stats_to_json( JsonOutput root, const player_t& p )
+bool has_valid_stats( const std::vector<stats_t*>& stats_list, int level = 0 )
+{
+  auto it = range::find_if( stats_list, [level]( const stats_t* stats ) {
+    if ( stats->quiet )
+    {
+      return false;
+    }
+
+    if ( level == 0 )
+    {
+      if ( stats->num_executes.mean() == 0 )
+      {
+        return false;
+      }
+
+      if ( stats->parent )
+      {
+        return false;
+      }
+    }
+    else
+    {
+      if ( stats->compound_amount == 0 )
+      {
+        return false;
+      }
+    }
+
+    return true;
+  } );
+
+  return it != stats_list.end();
+}
+
+void stats_to_json( JsonOutput root, const std::vector<stats_t*>& stats_list, int level = 0 )
 {
   root.make_array();
 
-  range::for_each( p.stats_list, [ & ]( const stats_t* s ) {
-    if ( s -> quiet || s -> num_executes.mean() == 0 )
+  range::for_each( stats_list, [ & ]( const stats_t* s ) {
+    if ( s -> quiet )
     {
       return;
+    }
+    if (level == 0)
+    {
+      // top-level is just abilities that were executed
+      if (s -> num_executes.mean() == 0)
+      {
+        return;
+      }
+      // probably a pet ability that matchs a player ability, e.g. Kill Command
+      if ( s -> parent ) {
+        return;
+      }
+    } else {
+      // children show anything with an amount to catch dots and effects of spells
+      if (s -> compound_amount == 0)
+      {
+        return;
+      }
     }
 
     auto node = root.add();
 
+    // find action for this stat
+    action_t* a            = nullptr;
+    for ( const auto& action : s->action_list )
+    {
+      if ( ( a = action )->id > 1 )
+        break;
+    }
+
+    if (a != nullptr) {
+      node[ "id" ] = a -> id;
+      node[ "spell_name" ] = a -> data_reporting().name_cstr();
+      if (a->item)
+      {
+        // grab item ID if available, can link trinket pets back to the item
+        node[ "item_id" ] = a->item->parsed.data.id;
+      }
+    }
     node[ "name" ] = s -> name();
     if ( s -> school != SCHOOL_NONE )
     {
@@ -215,7 +298,9 @@ void stats_to_json( JsonOutput root, const player_t& p )
       gain_to_json( node[ "resource_gain" ], s -> resource_gain );
     }
 
+
     node[ "num_executes" ] = s -> num_executes;
+    node[ "compound_amount" ] = s -> compound_amount;
 
     add_non_zero( node, "total_execute_time", s -> total_execute_time );
     add_non_zero( node, "portion_aps", s -> portion_aps );
@@ -252,6 +337,12 @@ void stats_to_json( JsonOutput root, const player_t& p )
         to_json( node[ "tick_results" ][ util::result_type_string( r ) ],
                  s -> tick_results[ r ] );
       }
+    }
+
+    // add children stats
+    if ( has_valid_stats( s->children, level + 1 ) )
+    {
+      stats_to_json( node[ "children" ], s->children, level + 1 );
     }
   } );
 }
@@ -368,13 +459,19 @@ void to_json( JsonOutput root,
     json[ "time" ] = entry.time;
     if ( entry.action )
     {
+      json[ "id" ] = entry.action -> id;
       json[ "name" ] = entry.action -> name();
-      json[ "target" ] = entry.action -> target -> name();
+      json[ "target" ] = entry.action->harmful ? entry.target -> name() : "none";
+      json[ "spell_name" ] = entry.action->data_reporting().name_cstr();
+      if (entry.action->item) {
+        json[ "item_name" ] = entry.action->item->name_str;
+      }
     }
     else
     {
       json[ "wait" ] = entry.wait_time;
     }
+
 
     if ( entry.buff_list.size() > 0 )
     {
@@ -383,6 +480,7 @@ void to_json( JsonOutput root,
       range::for_each( entry.buff_list, [ &buffs, &sim ]( const std::pair< buff_t*, std::vector<double> > data ) {
         auto entry = buffs.add();
 
+        entry[ "id" ] = data.first -> data_reporting().id();
         entry[ "name" ] = data.first -> name();
         entry[ "stacks" ] = data.second[0];
         if ( sim.json_full_states )
@@ -428,9 +526,9 @@ void to_json( JsonOutput root,
     auto resources = json[ "resources" ];
     auto resources_max = json[ "resources_max" ];
     range::for_each( relevant_resources, [ &resources, &resources_max, &entry ]( resource_e r ) {
-      resources[ util::resource_type_string( r ) ] = entry.resource_snapshot[ r ];
+      resources[ util::resource_type_string( r ) ] = util::round(entry.resource_snapshot[ r ], 2);
       // TODO: Why do we have this instead of using some static one?
-      resources_max[ util::resource_type_string( r ) ] = entry.resource_max_snapshot[ r ];
+      resources_max[ util::resource_type_string( r ) ] = util::round(entry.resource_max_snapshot[ r ], 2);
     } );
   } );
 }
@@ -659,6 +757,8 @@ void to_json( JsonOutput& arr, const player_t& p )
   root[ "scale_player" ] = p.scale_player;
   root[ "potion_used" ] = p.potion_used;
   root[ "timeofday" ] = p.timeofday == player_t::NIGHT_TIME ? "NIGHT_TIME" : "DAY_TIME";
+  root[ "zandalari_loa" ] = p.zandalari_loa == player_t::AKUNDA ? "akunda" : p.zandalari_loa == player_t::BWONSAMDI ? "bwonsamdi"
+    : p.zandalari_loa == player_t::GONK ? "gonk" : p.zandalari_loa == player_t::KIMBUL ? "kimbul" : p.zandalari_loa == player_t::KRAGWA ? "kragwa" : "paku";
 
   if ( p.is_enemy() )
   {
@@ -733,6 +833,7 @@ void to_json( JsonOutput& arr, const player_t& p )
   if ( p.sim -> report_details != 0 )
   {
     buffs_to_json( root[ "buffs" ], p );
+    constant_buffs_to_json( root[ "buffs_constant" ], p );
 
     if ( p.proc_list.size() > 0 )
     {
@@ -744,7 +845,17 @@ void to_json( JsonOutput& arr, const player_t& p )
       gains_to_json( root[ "gains" ], p );
     }
 
-    stats_to_json( root[ "stats" ], p );
+    stats_to_json( root[ "stats" ], p.stats_list );
+
+    // add pet stats as a separate property
+    JsonOutput stats_pets = root[ "stats_pets" ];
+    for ( const auto& pet : p.pet_list )
+    {
+      if ( has_valid_stats( pet->stats_list ) )
+      {
+        stats_to_json( stats_pets[ pet->name_str ], pet->stats_list );
+      }
+    }
   }
 
   gear_to_json( root[ "gear" ], p );
@@ -963,6 +1074,8 @@ void print_json_pretty( FILE* o, const sim_t& sim )
   root[ "beta_enabled" ] = SC_BETA;
   root[ "build_date" ] = __DATE__;
   root[ "build_time" ] = __TIME__;
+  root[ "timestamp" ] = as<uint64_t>( std::time( nullptr ) );
+
   if ( git_info::available())
   {
     root[ "git_revision" ] = git_info::revision();

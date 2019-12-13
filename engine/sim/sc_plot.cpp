@@ -3,6 +3,8 @@
 // Send questions to natehieter@gmail.com
 // ==========================================================================
 
+#include <memory>
+
 #include "simulationcraft.hpp"
 
 namespace
@@ -54,8 +56,8 @@ plot_t::plot_t( sim_t* s )
     num_plot_stats( 0 ),
     remaining_plot_stats( 0 ),
     remaining_plot_points( 0 ),
-    dps_plot_positive( 0 ),
-    dps_plot_negative( 0 )
+    dps_plot_positive( false ),
+    dps_plot_negative( false )
 {
   create_options();
 }
@@ -162,7 +164,7 @@ void plot_t::analyze_stats()
 
       if ( j != 0 )
       {
-        delta_sim = std::unique_ptr<sim_t>( new sim_t( sim ) );
+        delta_sim = std::make_unique<sim_t>( sim );
         if ( dps_plot_iterations > 0 )
         {
           delta_sim->work_queue->init( dps_plot_iterations );

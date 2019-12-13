@@ -165,36 +165,28 @@ namespace chart
 // Highcharts stuff
 bool generate_raid_gear( highchart::bar_chart_t&, const sim_t& );
 bool generate_raid_downtime( highchart::bar_chart_t&, const sim_t& );
-bool generate_raid_aps( highchart::bar_chart_t&, const sim_t&,
-                        const std::string& type );
-bool generate_distribution( highchart::histogram_chart_t&, const player_t* p,
-                            const std::vector<size_t>& dist_data,
-                            const std::string& distribution_name, double avg,
-                            double min, double max );
+bool generate_raid_aps( highchart::bar_chart_t&, const sim_t&, const std::string& type );
+bool generate_distribution( highchart::histogram_chart_t&, const player_t* p, const std::vector<size_t>& dist_data,
+                            const std::string& distribution_name, double avg, double min, double max,
+                            bool percent = false );
 bool generate_gains( highchart::pie_chart_t&, const player_t&, resource_e );
 bool generate_spent_time( highchart::pie_chart_t&, const player_t& );
-bool generate_stats_sources( highchart::pie_chart_t&, const player_t&,
-                             const std::string title,
+bool generate_stats_sources( highchart::pie_chart_t&, const player_t&, const std::string title,
                              const std::vector<stats_t*>& stats_list );
 bool generate_damage_stats_sources( highchart::pie_chart_t&, const player_t& );
 bool generate_heal_stats_sources( highchart::pie_chart_t&, const player_t& );
 bool generate_raid_dpet( highchart::bar_chart_t&, const sim_t& );
 bool generate_action_dpet( highchart::bar_chart_t&, const player_t& );
 bool generate_apet( highchart::bar_chart_t&, const std::vector<stats_t*>& );
-highchart::time_series_t& generate_stats_timeline( highchart::time_series_t&,
-                                                   const stats_t& );
-highchart::time_series_t& generate_actor_timeline(
-    highchart::time_series_t&, const player_t& p, const std::string& attribute,
-    const std::string& series_color, const sc_timeline_t& data );
-bool generate_actor_dps_series( highchart::time_series_t& series,
-                                const player_t& p );
-bool generate_scale_factors( highchart::bar_chart_t& bc, const player_t& p,
-                             scale_metric_e metric );
-bool generate_scaling_plot( highchart::chart_t& bc, const player_t& p,
-                            scale_metric_e metric );
+highchart::time_series_t& generate_stats_timeline( highchart::time_series_t&, const stats_t& );
+highchart::time_series_t& generate_actor_timeline( highchart::time_series_t&, const player_t& p,
+                                                   const std::string& attribute, const std::string& series_color,
+                                                   const sc_timeline_t& data );
+bool generate_actor_dps_series( highchart::time_series_t& series, const player_t& p );
+bool generate_scale_factors( highchart::bar_chart_t& bc, const player_t& p, scale_metric_e metric );
+bool generate_scaling_plot( highchart::chart_t& bc, const player_t& p, scale_metric_e metric );
 bool generate_reforge_plot( highchart::chart_t& bc, const player_t& p );
-
-}  // chart
+}  // namespace chart
 
 namespace gear_weights
 {
@@ -208,46 +200,34 @@ namespace report
 {
 using sc_html_stream = io::ofstream;
 
-void generate_player_charts( player_t&,
-                             player_processed_report_information_t& );
-void generate_player_buff_lists( player_t&,
-                                 player_processed_report_information_t& );
+void generate_player_charts( player_t&, player_processed_report_information_t& );
+void generate_player_buff_lists( player_t&, player_processed_report_information_t& );
 
-void print_html_sample_data( report::sc_html_stream&, const player_t&,
-                             const extended_sample_data_t&,
-                             const std::string& name, int& td_counter,
-                             int columns = 1 );
+void print_html_sample_data( report::sc_html_stream&, const player_t&, const extended_sample_data_t&,
+                             const std::string& name, int columns = 1 );
 
 bool output_scale_factors( const player_t* p );
 
 std::string decoration_domain( const sim_t& sim );
-std::string decorated_spell_name(
-    const sim_t& sim, const spell_data_t& spell,
-    const std::string& parms_str = std::string() );
+std::string decorated_spell_name( const sim_t& sim, const spell_data_t& spell,
+                                  const std::string& parms_str = std::string() );
 std::string decorated_item_name( const item_t* item );
-std::string decorate_html_string( const std::string& value,
-                                  const color::rgb& color );
+std::string decorate_html_string( const std::string& value, const color::rgb& color );
 
-void print_spell_query( std::ostream& out, const sim_t& sim,
-                        const spell_data_expr_t&, unsigned level );
-void print_spell_query( xml_node_t* out, FILE* file, const sim_t& sim,
-                        const spell_data_expr_t&, unsigned level );
-bool check_gear_ilevel( player_t& p, sim_t& sim );
-bool check_artifact_points( const player_t& p, sim_t& sim );
+void print_spell_query( std::ostream& out, const sim_t& sim, const spell_data_expr_t&, unsigned level );
+void print_spell_query( xml_node_t* out, FILE* file, const sim_t& sim, const spell_data_expr_t&, unsigned level );
+bool check_gear( player_t& p, sim_t& sim );
 void print_profiles( sim_t* );
 void print_text( sim_t*, bool detail );
 void print_html( sim_t& );
 void print_json( sim_t& );
-void print_html_player( report::sc_html_stream&, player_t&, int );
+void print_html_player( report::sc_html_stream&, player_t& );
 void print_suite( sim_t* );
 std::vector<std::string> beta_warnings();
-std::string pretty_spell_text( const spell_data_t& default_spell,
-                               const std::string& text, const player_t& p );
-inline std::string pretty_spell_text( const spell_data_t& default_spell,
-                                      const char* text, const player_t& p )
+std::string pretty_spell_text( const spell_data_t& default_spell, const std::string& text, const player_t& p );
+inline std::string pretty_spell_text( const spell_data_t& default_spell, const char* text, const player_t& p )
 {
-  return text ? pretty_spell_text( default_spell, std::string( text ), p )
-              : std::string();
+  return text ? pretty_spell_text( default_spell, std::string( text ), p ) : std::string();
 }
 
 template <typename T>
@@ -404,8 +384,8 @@ public:
   {
     std::stringstream s;
 
-    s << "<a href=\"http://" << decoration_domain( *this -> m_obj -> sim )
-      << ".wowdb.com/spells/" << this -> m_obj -> data().id();
+    s << "<a href=\"https://" << decoration_domain( *this -> m_obj -> sim )
+      << ".wowhead.com/spell=" << this -> m_obj -> data_reporting().id();
 
     return s.str();
   }
@@ -413,14 +393,14 @@ public:
   bool can_decorate() const override
   {
     return this -> m_obj -> sim -> decorated_tooltips &&
-           this -> m_obj -> data().id() > 0;
+           this -> m_obj -> data_reporting().id() > 0;
   }
 
   std::string url_name() const override
-  { return m_obj -> data().id() ? m_obj -> data().name_cstr() : m_obj -> name(); }
+  { return util::encode_html( m_obj -> data_reporting().id() ? m_obj -> data_reporting().name_cstr() : m_obj -> name() ); }
 
   std::string token() const override
-  { return m_obj -> name(); }
+  { return util::encode_html( m_obj -> name() ); }
 
   std::vector<std::string> parms() const override
   {
@@ -428,7 +408,7 @@ public:
 
     if ( m_obj -> item )
     {
-      parameters.push_back( "itemLevel=" + util::to_string( m_obj -> item -> item_level() ) );
+      parameters.push_back( "ilvl=" + util::to_string( m_obj -> item -> item_level() ) );
     }
 
     return parameters;
@@ -439,14 +419,13 @@ public:
 class spell_data_decorator_t : public html_decorator_t<spell_data_decorator_t>
 {
   const sim_t* m_sim;
-  const player_t* m_player;
   const spell_data_t* m_spell;
   const item_t* m_item;
   const artifact_power_t* m_power;
 
 public:
   spell_data_decorator_t( const sim_t* obj, const spell_data_t* spell ) :
-    html_decorator_t(), m_sim( obj ), m_player( nullptr ), m_spell( spell ),
+    html_decorator_t(), m_sim( obj ), m_spell( spell ),
     m_item( nullptr ), m_power( nullptr )
   { }
 
@@ -503,6 +482,6 @@ public:
   std::string token() const override;
 };
 
-}  // report
+}  // namespace report
 
 #endif  // SC_REPORT_HPP

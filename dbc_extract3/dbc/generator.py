@@ -1,4 +1,4 @@
-import sys, os, re, types, html.parser, urllib, datetime, signal, json, pathlib, csv, logging, io, fnmatch, traceback
+import sys, os, re, types, html.parser, urllib, datetime, signal, json, pathlib, csv, logging, io, fnmatch, traceback, binascii
 
 import dbc.db, dbc.data, dbc.parser, dbc.file
 
@@ -29,7 +29,7 @@ def output_hotfixes(generator, data_str, hotfix_data):
         len(hotfix_data.keys())
     ))
 
-    generator._out.write('// %d %s hotfix entries, wow build level %d\n' % (
+    generator._out.write('// %d %s hotfix entries, wow build level %s\n' % (
         len(hotfix_data.keys()), data_str, generator._options.build ))
     generator._out.write('static hotfix::client_hotfix_entry_t __%s%s_hotfix%s_data[] = {\n' % (
         generator._options.prefix and ('%s_' % generator._options.prefix) or '',
@@ -225,8 +225,8 @@ class CSVDataGenerator(object):
 class DataGenerator(object):
     _class_names = [ None, 'Warrior', 'Paladin', 'Hunter', 'Rogue',     'Priest', 'Death Knight', 'Shaman', 'Mage',  'Warlock', 'Monk',       'Druid', 'Demon Hunter'  ]
     _class_masks = [ None, 0x1,       0x2,       0x4,      0x8,         0x10,     0x20, 0x40,     0x80,    0x100,     0x200,        0x400, 0x800   ]
-    _race_names  = [ None, 'Human',   'Orc',     'Dwarf',  'Night Elf', 'Undead', 'Tauren',       'Gnome',  'Troll', 'Goblin',  'Blood Elf', 'Draenei', 'Dark Iron Dwarf', None, 'Mag\'har Orc' ] + [ None ] * 7 + [ 'Worgen', None, None, 'Pandaren', None, 'Nightborne', 'Highmountain Tauren', 'Void Elf', 'Lightforged Draenei' ]
-    _race_masks  = [ None, 0x1,       0x2,       0x4,      0x8,         0x10,     0x20,           0x40,     0x80,    0x100,     0x200,       0x400,     0x800,             None, 0x2000,        ] + [ None ] * 7 + [ 0x200000, None, None, 0x1000000, None, 0x4000000, 0x8000000, 0x10000000, 0x20000000 ]
+    _race_names  = [ None, 'Human',   'Orc',     'Dwarf',  'Night Elf', 'Undead', 'Tauren',       'Gnome',  'Troll', 'Goblin',  'Blood Elf', 'Draenei', 'Dark Iron Dwarf', None, 'Mag\'har Orc' ] + [ None ] * 7 + [ 'Worgen', None, None, 'Pandaren', None, 'Nightborne', 'Highmountain Tauren', 'Void Elf', 'Lightforged Draenei', 'Zandalari Troll', 'Kul Tiran' ]
+    _race_masks  = [ None, 0x1,       0x2,       0x4,      0x8,         0x10,     0x20,           0x40,     0x80,    0x100,     0x200,       0x400,     0x800,             None, 0x2000,        ] + [ None ] * 7 + [ 0x200000, None, None, 0x1000000,  None, 0x4000000,    0x8000000,             0x10000000, 0x20000000,            0x40000000,        0x80000000 ]
     _pet_names   = [ None, 'Ferocity', 'Tenacity', None, 'Cunning' ]
     _pet_masks   = [ None, 0x1,        0x2,        None, 0x4       ]
 
@@ -355,7 +355,7 @@ class RealPPMModifierGenerator(DataGenerator):
             (self._options.prefix and ('%s_' % self._options.prefix) or '').upper(),
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(output_data)))
-        self._out.write('// %d RPPM Modifiers, wow build level %d\n' % (len(output_data), self._options.build))
+        self._out.write('// %d RPPM Modifiers, wow build level %s\n' % (len(output_data), self._options.build))
         self._out.write('static struct rppm_modifier_t __%srppmmodifier%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
             self._options.suffix and ('_%s' % self._options.suffix) or ''))
@@ -588,7 +588,7 @@ class TalentDataGenerator(DataGenerator):
             (self._options.prefix and ('%s_' % self._options.prefix) or '').upper(),
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(ids)))
-        self._out.write('// %d talents, wow build %d\n' % ( len(ids), self._options.build ))
+        self._out.write('// %d talents, wow build %s\n' % ( len(ids), self._options.build ))
         self._out.write('static struct talent_data_t __%stalent%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
             self._options.suffix and ('_%s' % self._options.suffix) or '' ))
@@ -634,7 +634,7 @@ class RulesetItemUpgradeGenerator(DataGenerator):
         return sorted(self._rulesetitemupgrade_db.keys()) + [0]
 
     def generate(self, ids = None):
-        self._out.write('// Item upgrade rules, wow build level %d\n' % self._options.build)
+        self._out.write('// Item upgrade rules, wow build level %s\n' % self._options.build)
 
         self._out.write('static struct item_upgrade_rule_t __%sitem_upgrade_rule%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -654,7 +654,7 @@ class ItemUpgradeDataGenerator(DataGenerator):
         super().__init__(options, data_store)
 
     def generate(self, ids = None):
-        self._out.write('// Upgrade rule data, wow build level %d\n' % self._options.build)
+        self._out.write('// Upgrade rule data, wow build level %s\n' % self._options.build)
 
         self._out.write('static struct item_upgrade_t __%supgrade_rule%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -763,8 +763,8 @@ class ItemDataGenerator(DataGenerator):
                 # All tabards
                 elif data.inv_type == 19:
                     filter_ilevel = False
-                # All heirlooms
-                elif data.quality == 7:
+                # All epic+ armor/weapons
+                elif data.quality >= 4:
                     filter_ilevel = False
                 else:
                     # On-use item, with a valid spell (and cooldown)
@@ -773,7 +773,7 @@ class ItemDataGenerator(DataGenerator):
                             filter_ilevel = False
                             break
             # Gems
-            elif classdata.classs == 3:
+            elif classdata.classs == 3 or (classdata.classs == 7 and classdata.subclass == 4):
                 if data.gem_props == 0:
                     continue
                 else:
@@ -882,7 +882,7 @@ class ItemDataGenerator(DataGenerator):
             (self._options.prefix and ('%s_' % self._options.prefix) or '').upper(),
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(ids)))
-        self._out.write('// %d items, ilevel %d-%d, wow build level %d\n' % (
+        self._out.write('// %d items, ilevel %d-%d, wow build level %s\n' % (
             len(ids), self._options.min_ilevel, self._options.max_ilevel, self._options.build))
         self._out.write('static struct item_data_t __%sitem%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -941,7 +941,7 @@ class ItemDataGenerator(DataGenerator):
             fields += [ '{ %s }' % ', '.join(cooldown_group_duration) ]
 
             fields += [ '{ %s }' % ', '.join(item.field('socket_color_1', 'socket_color_2', 'socket_color_3')) ]
-            fields += item.field('gem_props', 'socket_bonus', 'item_set', 'rand_suffix', 'scale_stat_dist', 'id_artifact' )
+            fields += item.field('gem_props', 'socket_bonus', 'item_set', 'scale_stat_dist', 'id_artifact' )
 
             self._out.write('  { %s },\n' % (', '.join(fields)))
 
@@ -1053,7 +1053,6 @@ class ItemDataGenerator(DataGenerator):
             item_entry['gem_props'] = int(item.field('gem_props')[0])
             item_entry['socket_bonus'] = int(item.field('socket_bonus')[0])
             item_entry['item_set'] = int(item.field('item_set')[0])
-            item_entry['rand_suffix'] = int(item.field('rand_suffix')[0])
             item_entry['scale_stat_dist'] = int(item.field('scale_stat_dist')[0])
 
             s2['items'].append(item_entry)
@@ -1064,8 +1063,6 @@ class ItemDataGenerator(DataGenerator):
 
 class SpellDataGenerator(DataGenerator):
     _spell_ref_rx = r'(?:\??\(?[Saps]|@spell(?:name|desc|icon|tooltip)|\$|&)([0-9]{2,})(?:\[|(?<=[0-9a-zA-Z])|\&|\))'
-
-
 
     # Pattern based whitelist, these will always be added
     _spell_name_whitelist = [
@@ -1180,6 +1177,8 @@ class SpellDataGenerator(DataGenerator):
          259448, 259449, 259452, 259453,
          # 8.0 Bountiful Captain's Feast food buffs
          259454, 259455, 259456, 259457,
+         # 8.1 Boralus Blood Sausage food buffs
+         290469, 290467, 290468,
          # 8.0 Incendiary Ammunition
          265092,
          # Void Slash (Void Stalker's Contract damage spell)
@@ -1229,6 +1228,86 @@ class SpellDataGenerator(DataGenerator):
          279664,
          # Secrets of the Sands for Sandscoured Idol
          278267,
+         # Deep Roots for Ancients' Bulwark
+         287610,
+         # Webweaver's Soul Gem
+         270827,
+         # Boralus Blood Sausage Feast
+         290469, 290468, 290467, 288075, 288074,
+         # Buffs for Variable Intensity Gigavolt Oscillating Reactor
+         287916, 290052, 290051, 290042, 287967,
+         # Tidestorm Codex
+         288086,
+         #Zandalari Racials - Permanent Buffs
+         292359, 292360, 292361, 292362, 292363, 292364,
+         #Zandalari Racials - Spell Procs
+         292380, 292463, 292473, 292474, 292486,
+         #Leggings of the Aberrant Tidesage damage proc
+         295811,
+         # Fa'thuul's Floodguards
+         295257,
+         # Legplates of Unbound Anguish damage proc
+         295428,
+         # Darkmoon Faire food buff
+         185786,
+         # The Unbound Force Azerite Essence damage spell
+         298453,
+         # Essence of the Focusing Iris major damage spell
+         295374, 295338,
+         # Spell cast by summon from Condensed Life-Force major power
+         295856,
+         # 8.2 Famine Evaluator And Snack Table buffs
+         297116, 297117, 297118, 297119,
+         # 8.2 Force Multiplier enchant buffs (str, crit, haste, mastery, agi)
+         300691, 300801, 300802, 300809, 300893,
+         # 8.2 Machinist's Brilliance enchant buffs (crit, int, haste, mastery)
+         298431, 300693, 300761, 300762,
+         # 8.2 Naga Hide enchant buffs (agi, str)
+         298466, 300800,
+         # 8.2 Vision of Perfection RPPM
+         297866, 297868, 297869,
+         # Volcanic Eruption for the Highborne Compendium of Sundering
+         300907,
+         # Nullification Dynamo Essence damage spell
+         296061,
+         # Shiver Venom Relic
+         305290,
+         # Shivering Bolt/Venomous Lance (Shiver Venom Crossbow/Lance bonus damage)
+         303559, 303562,
+         # Leviathan's Lure
+         302763,
+         # Za'qul's Portal key
+         302960,
+         # Ashvane's Razor Coral
+         303568, 303572,
+         # Dribbling Inkpod
+         302491,
+         # Remote Guidance Device
+         302311, 302312,
+         # Diver's Folly
+         303583, 303621,
+         # Storm of the Eternal (Eternal Palace 2min cycle buff)
+         303731,
+         # Undulating Tides lockout debuff
+         303438,
+         # Exploding Pufferfish
+         305315,
+         # Harbinger's Inscrutable Will
+         295395,
+         # Mechagon combo rings
+         306474, 301886, 301887,
+         # Anu-Azshara lockout debuff
+         304482,
+         # 8.3.0 Essences
+         # Breath of the Dying (minor damage spell, R2 minor heal spell, R3 major buff on kill)
+         311192, 311201, 311202,
+         # Spark of Inspiration (minor buff)
+         313643,
+         # The Formless Void (major unknown buff)
+         312734,
+         # 8.3 Raid items
+         # Shgla'yos, Astral Malignity
+         317262, 317265,
         ),
 
         # Warrior:
@@ -1248,6 +1327,9 @@ class SpellDataGenerator(DataGenerator):
             ( 242952, 0 ),		    # Bloody Rage
             ( 242953, 0 ),          # Bloody Rage
             ( 278497, 0 ),          # Seismic Wave (Azerite)
+            ( 195707, 0 ),          # Rage gain from taking hits
+            ( 161798, 0 ),          # Riposte passive (turns crit rating into parry)
+            ( 279142, 0 ),          # Iron Fortress damage (azerite)
         ),
 
         # Paladin:
@@ -1275,12 +1357,15 @@ class SpellDataGenerator(DataGenerator):
             ( 211561, 0 ),          # Justice Gaze
             ( 246973, 0 ),          # Sacred Judgment (Ret T20 4p)
             ( 275483, 0 ),          # Inner Light azerite trait damge
+            ( 184689, 0 ),          # Shield of Vengeance damage proc
+            ( 286232, 0 ),          # Light's Decree damage proc
         ),
 
         # Hunter:
         (
           ( 75, 0 ),     # Auto Shot
           ( 131900, 0 ), # Murder of Crows damage spell
+          ( 312365, 0 ), # Thrill of the Hunt
           ( 171457, 1 ), # Chimaera Shot - Nature
           ( 201594, 1 ), # Stampede
           ( 118459, 5 ), # Beast Cleave
@@ -1295,6 +1380,9 @@ class SpellDataGenerator(DataGenerator):
           ( 273289, 0 ), # Latent Poison (Azerite)
           ( 272745, 0 ), # Wildfire Cluster (Azerite)
           ( 278565, 0 ), # Rapid Reload (Azerite)
+          ( 120694, 0 ), # Dire Beast energize
+          ( 83381, 5 ),  # BM Pet Kill Command
+          ( 259277, 5 ), # SV Pet Kill Command
         ),
 
         # Rogue:
@@ -1327,6 +1415,7 @@ class SpellDataGenerator(DataGenerator):
             ( 278981, 0 ),          # The First Dance, Azerite trait aura
             ( 273009, 0 ),          # Double Dose, Azerite trait dmg spell
             ( 278962, 0 ),          # Paradise Lost, Azerite trait buff
+            ( 286131, 0 ),          # Replicating Shadows, Azerite trait dmg effect
         ),
 
         # Priest:
@@ -1339,6 +1428,10 @@ class SpellDataGenerator(DataGenerator):
             ( 194249, 3, False ),   # Void Form extra data
             ( 212570, 3, False ),   # Surrendered Soul (Surrender To Madness Death)
             ( 269555, 3 ),          # Azerite Trait Torment of Torments
+            ( 280398, 1, False ),   # Sins of the Many buff
+            ( 275725, 0 ),          # Whispers of the Damned trigger effect
+            ( 275726, 0 ),          # Whispers of the damned insanity gain
+            ( 288342, 0 ),          # Thought Harvester trigger buff for Mind Sear
         ),
 
         # Death Knight:
@@ -1352,37 +1445,25 @@ class SpellDataGenerator(DataGenerator):
           ( 52212, 0, False ), # Death and Decay false positive for activatable
           ( 81277, 5 ), ( 81280, 5 ), ( 50453, 5 ), # Bloodworms heal / burst
           ( 77535, 0 ), # Blood Shield
-          ( 116783, 0 ), # Death Siphon heal
-          ( 96171, 0 ), # Will of the Necropolish Rune Tap buff
-          ( 144948, 0 ), # T16 tank 4PC Bone Shield charge proc
-          ( 144953, 0 ), # T16 tank 2PC Death Strike proc
-          ( 144909, 0 ), # T16 dps 4PC frost driver spell
           ( 57330, 0, True ), # Horn of Winter needs to be explicitly put in the general tree, as our (over)zealous filtering thinks it's not an active ability
           ( 47568, 0, True ), # Same goes for Empower Rune Weapon
-          ( 170205, 0 ), # Frost T17 4pc driver continued ...
-          ( 187981, 0 ), ( 187970, 0 ), # T18 4pc unholy relevant spells
-          ( 184982, 0 ),    # Frozen Obliteration
-          ( 212333, 5 ),    # Cleaver for Sludge Belcher
-          ( 212332, 5 ),    # Smash for Sludge Belcher
-          ( 212338, 5 ),    # Vile Gas for Sludge Belcher
-          ( 212337, 5 ),	# Powerful Smash for Sludge Belcher
-          ( 198715, 5 ),    # Val'kyr Strike for Dark Arbiter
-          ( 211947, 0 ),    # Shadow Empowerment for Dark Arbiter
+          ( 211947, 0 ),    # Shadow Empowerment for Gargoyle
           ( 81141, 0 ),     # Crimson Scourge buff
           ( 212423, 5 ),    # Skulker Shot for All Will Serve
-          ( 207260, 5 ),    # Arrow Spray for All Will Serve
           ( 45470, 0 ),     # Death Strike heal
           ( 196545, 0 ),    # Bonestorm heal
-          ( 221847, 0 ),    # Blood Mirror damage
-          ( 205164, 0 ),    # Crystalline Swords
-          ( 205165, 0 ),    # More crystalline swords stuff
-          ( 191730, 0 ), ( 191727, 0 ), ( 191728, 0 ), ( 191729, 0 ), # Armies of the Damned debuffs
           ( 253590, 0 ),    # T21 4P frost damage component
           ( 274373, 0 ),    # Festermight azerite trait
           ( 199373, 5 ),    # Army ghoul claw spell
           ( 275918, 0 ),    # Echoing Howl azerite trait
           ( 279606, 0 ),    # Last Surprise azerite trait
           ( 273096, 0 ),    # Horrid Experimentation azerite trait
+          ( 49088, 0 ),     # Anti-magic Shell RP generation
+          ( 288548, 5 ), ( 288546, 5 ),   # Magus of the Dead's (azerite trait) Frostbolt and Shadow Bolt spells
+          ( 286836, 0 ), ( 286954, 0 ), ( 290814, 0 ), # Helchains damage (azerite trait)
+          ( 287320, 0 ),    # Frostwhelp's Indignation (azerite)
+          ( 283499, 0 ), ( 292493, 0 ), # Frost Fever's RP generation spells
+          ( 302656, 0 ), # Vision of Perfection's resource generation for Frost DK
 
         ),
 
@@ -1430,6 +1511,7 @@ class SpellDataGenerator(DataGenerator):
           ( 275394, 0 ),                                # Lightning Conduit
           ( 273466, 0 ),                                # Strength of Earth
           ( 279556, 0 ),                                # Rumbling Tremors damage spell
+          ( 286976, 0 ),                                # Tectonic Thunder Azerite Trait buff
         ),
 
         # Mage:
@@ -1444,6 +1526,7 @@ class SpellDataGenerator(DataGenerator):
           ( 148022, 0 ),                            # Icicle
           ( 155152, 5 ),                            # Prismatic Crystal nuke
           ( 157978, 0 ), ( 157979, 0 ),             # Unstable magic aoe
+          ( 244813, 0 ),                            # Second Living Bomb DoT
           ( 187677, 0 ),                            # Aegwynn's Ascendance AOE
           ( 191764, 0 ), ( 191799, 0 ),             # Arcane T18 2P Pet
           ( 194432, 0 ),                            # Felo'melorn - Aftershocks
@@ -1529,6 +1612,7 @@ class SpellDataGenerator(DataGenerator):
 		  ( 272012, 5 ),		# Illidari Satyr - Shadow Slash
 		  ( 272131, 5 ),		# Eye of Gul'dan - Eye of Gul'dan
 		  ( 267964, 0 ),		# new soul strike?
+		  ( 289367, 1 )			# Pandemic Invocation Damage
 
         ),
 
@@ -1563,11 +1647,22 @@ class SpellDataGenerator(DataGenerator):
           ( 242387, 3 ), # Thunderfist Artifact trait buff
           ( 252768, 3 ), # Tier 21 2-piece DPS effect
           ( 261682, 3 ), # Chi Burst Chi generation cap
+          ( 285594, 3 ), # Good Karma Healing Spell
+		  ( 290461, 3 ), # Reverse Harm Damage
           # Legendary
           ( 213114, 3 ), # Hidden Master's Forbidden Touch buff
           # Azerite Traits
           ( 278710, 3 ), # Swift Roundhouse
           ( 278767, 1 ), # Training of Niuzao buff
+          ( 285958, 1 ), # Straight, No Chaser trait
+          ( 286585, 3 ), # Dance of Chi-Ji trait
+          ( 286586, 3 ), # Dance of Chi-Ji RPPM
+          ( 286587, 3 ), # Dance of Chi-Ji buff
+          ( 287055, 3 ), # Fury of Xuen trait
+          ( 287062, 3 ), # Fury of Xuen buff
+          ( 287063, 3 ), # Fury of Xuen proc
+          ( 288634, 3 ), # Glory of the Dawn trait
+          ( 288636, 3 ), # Glory of the Dawn proc
         ),
 
         # Druid:
@@ -1588,8 +1683,10 @@ class SpellDataGenerator(DataGenerator):
           ( 135597, 3 ),       # Tooth and Claw absorb buff
           ( 155784, 3 ),       # Primal Tenacity buff
           ( 137542, 0 ),       # Displacer Beast buff
+          ( 157228, 1 ),       # Owlkin Frenzy
           ( 185321, 3 ),       # Stalwart Guardian buff (T18 trinket)
           ( 188046, 5 ),       # T18 2P Faerie casts this spell
+          ( 202461, 1 ),       # Stellar Drift mobility buff
           ( 202771, 1 ),       # Half Moon artifact power
           ( 202768, 1 ),       # Full Moon artifact power
           ( 203001, 1 ),       # Goldrinn's Fang, Spirit of Goldrinn artifact power
@@ -1609,10 +1706,15 @@ class SpellDataGenerator(DataGenerator):
           ( 69369,  2 ),       # Predatory Swiftness buff
           ( 227034, 3 ),       # Nature's Guardian heal
           ( 252750, 2 ),       # Feral tier21_2pc
+          ( 272873, 1 ),       # Streaking Star (azerite) damage spell
           ( 274282, 1 ),       # Half Moon
           ( 274283, 1 ),       # Full Moon
           ( 279641, 1 ),       # Lunar Shrapnel Azerite Trait
           ( 279729, 1 ),       # Solar Empowerment
+          ( 276026, 2 ),       # Iron Jaws, Feral Azerite Power
+          ( 289314, 3 ),       # Burst of Savagery Azerite Trait
+          ( 289315, 3 ),       # Burst of Savagery Azerite Trait buff
+		  ( 305497, 0 ), ( 305496, 0 ), # Thorns pvp talent
         ),
         # Demon Hunter:
         (
@@ -1732,6 +1834,8 @@ class SpellDataGenerator(DataGenerator):
         ( 2420, ),               # Highmountain Tauren 0x8000000
         ( 2423, ),               # Void Elf 0x10000000
         ( 2421, ),               # Lightforged Draenei 0x20000000
+        ( 2721, ),               # Zandalari Troll 0x40000000
+        ( 2723, ),               # Kul Tiran 0x80000000
     ]
 
     _skill_category_blacklist = [
@@ -1909,6 +2013,11 @@ class SpellDataGenerator(DataGenerator):
         if self._options.build >= 25600:
             self._dbc.append('SpellXDescriptionVariables')
 
+        if self._options.build >= dbc.WowVersion(8, 2, 0, 30080):
+            self._dbc.append('AzeriteItemMilestonePower')
+            self._dbc.append('AzeriteEssencePower')
+            self._dbc.append('AzeriteEssence')
+
     def initialize(self):
         if not super().initialize():
             return False
@@ -1934,6 +2043,13 @@ class SpellDataGenerator(DataGenerator):
 
         if self._options.build < 25600:
             self._data_store.link('SpellEffectScaling', 'id_effect', 'SpellEffect', 'scaling')
+
+        if self._options.build >= dbc.WowVersion(8, 2, 0, 30080):
+            self._data_store.link('AzeriteEssencePower', 'id_power', 'AzeriteEssence', 'powers')
+            self._data_store.link('AzeriteEssencePower', 'id_spell_major_base', 'SpellName', 'azerite_essence')
+            self._data_store.link('AzeriteEssencePower', 'id_spell_minor_base', 'SpellName', 'azerite_essence')
+            self._data_store.link('AzeriteEssencePower', 'id_spell_major_upgrade', 'SpellName', 'azerite_essence')
+            self._data_store.link('AzeriteEssencePower', 'id_spell_minor_upgrade', 'SpellName', 'azerite_essence')
 
         self._data_store.link('ItemSetSpell', 'id_item_set', 'ItemSet', 'bonus')
 
@@ -2409,6 +2525,26 @@ class SpellDataGenerator(DataGenerator):
                 mask_class = self._class_masks[data.class_id] or 0
                 ids[spell_id]['mask_class'] |= mask_class
 
+        # Azerite esssence spells
+        if self._options.build >= dbc.WowVersion(8, 2, 0, 30080):
+            for _, data in self._azeriteitemmilestonepower_db.items():
+                power = self._azeritepower_db[data.id_power]
+                if power.id != data.id_power:
+                    continue
+
+                spell_id = power.id_spell
+                spell = self._spellname_db[spell_id]
+                if spell.id != spell_id:
+                    continue
+
+                self.process_spell(spell_id, ids, 0, 0, False)
+
+            for _, data in self._azeriteessencepower_db.items():
+                self.process_spell(data.id_spell_major_base, ids, 0, 0, False)
+                self.process_spell(data.id_spell_major_upgrade, ids, 0, 0, False)
+                self.process_spell(data.id_spell_minor_base, ids, 0, 0, False)
+                self.process_spell(data.id_spell_minor_upgrade, ids, 0, 0, False)
+
         # Last, get the explicitly defined spells in _spell_id_list on a class basis and the
         # generic spells from SpellDataGenerator._spell_id_list[0]
         for generic_spell_id in SpellDataGenerator._spell_id_list[0]:
@@ -2472,7 +2608,7 @@ class SpellDataGenerator(DataGenerator):
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(ids)
         ))
-        self._out.write('// %d spells, wow build level %d\n' % ( len(ids), self._options.build ))
+        self._out.write('// %d spells, wow build level %s\n' % ( len(ids), self._options.build ))
         self._out.write('static struct spell_data_t __%sspell%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
             self._options.suffix and ('_%s' % self._options.suffix) or ''
@@ -2673,13 +2809,30 @@ class SpellDataGenerator(DataGenerator):
             power = spell.get_link('azerite_power')
             fields += power.field('id')
 
-            # 41, 42
+            # 8.2.0 Azerite essence stuff
+            if self._options.build >= dbc.WowVersion(8, 2, 0, 30080):
+                essences = [x.field('id_essence')[0] for x in spell.get_links('azerite_essence')]
+                if len(essences) == 0:
+                    # 41
+                    fields += self._azeriteessence_db[0].field('id')
+                else:
+                    essences = list(set(essences))
+                    if len(essences) > 1:
+                        logging.warn('Spell %s (id=%d) associated with more than one Azerite Essence (%s)',
+                            spell.name, spell.id, ', '.join(essences))
+
+                    # 41
+                    fields.append(essences[0])
+            else:
+                fields.append('0')
+
+            # 42, 43
             spell_text = spell.get_link('text')
             fields += spell_text.field('desc', 'tt')
-            f, hfd = spell_text.get_hotfix_info(('desc', 41), ('tt', 42))
+            f, hfd = spell_text.get_hotfix_info(('desc', 42), ('tt', 43))
             hotfix_flags |= f
             hotfix_data += hfd
-            # 43
+            # 44
             if self._options.build < 25600:
                 desc_var = self._spelldescriptionvariables_db[spell.id_desc_var]
             else:
@@ -2688,34 +2841,34 @@ class SpellDataGenerator(DataGenerator):
 
             if desc_var.id:
                 fields += desc_var.field('desc')
-                f, hfd = desc_var.get_hotfix_info(('desc', 43))
+                f, hfd = desc_var.get_hotfix_info(('desc', 44))
                 hotfix_flags |= f
                 hotfix_data += hfd
             else:
                 if self._options.build < 25600:
-                    f, hfd = spell.get_hotfix_info(('id_desc_var', 43))
+                    f, hfd = spell.get_hotfix_info(('id_desc_var', 44))
                 else:
                     link = spell.get_link('desc_var_link')
-                    f, hfd = link.get_hotfix_info(('id_desc_var', 43))
+                    f, hfd = link.get_hotfix_info(('id_desc_var', 44))
                 hotfix_flags |= f
                 hotfix_data += hfd
                 fields += [ u'0' ]
-            # 44
+            # 45
             fields += spell_text.field('rank')
-            f, hfd = spell_text.get_hotfix_info(('rank', 44))
+            f, hfd = spell_text.get_hotfix_info(('rank', 45))
             hotfix_flags |= f
             hotfix_data += hfd
 
-            # 45
-            fields += spell.get_link('level').field('req_max_level')
-            f, hfd = spell.get_link('level').get_hotfix_info(('req_max_level', 45))
-
             # 46
+            fields += spell.get_link('level').field('req_max_level')
+            f, hfd = spell.get_link('level').get_hotfix_info(('req_max_level', 46))
+
+            # 47
             fields += category.field('dmg_class')
-            f, hfd = category.get_hotfix_info(('dmg_class', 46))
+            f, hfd = category.get_hotfix_info(('dmg_class', 47))
 
             # Pad struct with empty pointers for direct access to spell effect data
-            # 46, 47, 48, 49, 50
+            # 47, 48, 49, 50, 51
             fields += [ u'0', u'0', u'0', u'0', u'0', ]
 
             # Finally, update hotfix flags, they are located in the array of fields at position 2
@@ -2741,7 +2894,7 @@ class SpellDataGenerator(DataGenerator):
             (self._options.prefix and ('%s_' % self._options.prefix) or '').upper(),
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(effects)))
-        self._out.write('// %d effects, wow build level %d\n' % ( len(effects), self._options.build ))
+        self._out.write('// %d effects, wow build level %s\n' % ( len(effects), self._options.build ))
         self._out.write('static struct spelleffect_data_t __%sspelleffect%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
             self._options.suffix and ('_%s' % self._options.suffix) or ''))
@@ -2831,9 +2984,9 @@ class SpellDataGenerator(DataGenerator):
             hotfix_data += hfd
 
             # 25, 26, 27, 28
-            fields += effect.field('chain_target', 'implicit_target_1', 'implicit_target_2', 'val_mul')
+            fields += effect.field('chain_target', 'implicit_target_1', 'implicit_target_2', 'val_mul', 'pvp_coefficient')
             f, hfd = effect.get_hotfix_info(('chain_target', 23), ('implicit_target_1', 24),
-                ('implicit_target_2', 25), ('val_mul', 26))
+                ('implicit_target_2', 25), ('val_mul', 26), ('pvp_coefficient', 27))
             hotfix_flags |= f
             hotfix_data += hfd
 
@@ -2873,7 +3026,7 @@ class SpellDataGenerator(DataGenerator):
         powers.sort(key = lambda k: k.id)
 
         self._out.write('#define __%s_SIZE (%d)\n\n' % ( self.format_str( "spellpower" ).upper(), len(powers) ))
-        self._out.write('// %d effects, wow build level %d\n' % ( len(powers), self._options.build ))
+        self._out.write('// %d effects, wow build level %s\n' % ( len(powers), self._options.build ))
         self._out.write('static struct spellpower_data_t __%s_data[] = {\n' % ( self.format_str( "spellpower" ) ))
 
         for power in powers + [ self._spellpower_db[0] ]:
@@ -2927,7 +3080,7 @@ class SpellDataGenerator(DataGenerator):
         labels.sort(key = lambda k: k.id)
 
         self._out.write('#define __%s_SIZE (%d)\n\n' % ( self.format_str( "spelllabel" ).upper(), len(labels) ))
-        self._out.write('// %d labels, wow build level %d\n' % ( len(labels), self._options.build ))
+        self._out.write('// %d labels, wow build level %s\n' % ( len(labels), self._options.build ))
         self._out.write('static struct spelllabel_data_t __%s_data[] = {\n' % ( self.format_str( "spelllabel" ) ))
 
         for label in labels + [ self._spelllabel_db[0] ]:
@@ -2999,7 +3152,7 @@ class MasteryAbilityGenerator(DataGenerator):
         )
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), max_ids))
-        self._out.write('// Class mastery abilities, wow build %d\n' % self._options.build)
+        self._out.write('// Class mastery abilities, wow build %s\n' % self._options.build)
         self._out.write('static unsigned __%s_data[MAX_CLASS][MAX_SPECS_PER_CLASS][%s_SIZE] = {\n' % (
             data_str,
             data_str.upper(),
@@ -3111,7 +3264,7 @@ class RacialSpellGenerator(SpellDataGenerator):
             self.format_str( 'MAX_RACE' ),
             self.format_str( 'MAX_RACE' ),
             len(DataGenerator._race_names) ))
-        self._out.write('// Racial abilities, wow build %d\n' % self._options.build)
+        self._out.write('// Racial abilities, wow build %s\n' % self._options.build)
         self._out.write('static unsigned __%s_data[%s][%s][%s_SIZE] = {\n' % (
             self.format_str( 'race_ability' ),
             self.format_str( 'MAX_RACE' ),
@@ -3200,7 +3353,7 @@ class SpecializationSpellGenerator(DataGenerator):
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), max_ids))
 
-        self._out.write('// Talent tree specialization abilities, wow build %d\n' % self._options.build)
+        self._out.write('// Talent tree specialization abilities, wow build %s\n' % self._options.build)
         self._out.write('static unsigned __%s_data[][MAX_SPECS_PER_CLASS][%s_SIZE] = {\n' % (
             data_str,
             data_str.upper(),
@@ -3451,7 +3604,7 @@ class SpellListGenerator(SpellDataGenerator):
             self.format_str( 'MAX_CLASS' ),
             self.format_str( 'MAX_CLASS' ),
             len(DataGenerator._class_names)))
-        self._out.write('// Class based active abilities, wow build %d\n' % self._options.build)
+        self._out.write('// Class based active abilities, wow build %s\n' % self._options.build)
         self._out.write('static unsigned __%s_data[][%s_TREE_SIZE][%s_SIZE] = {\n' % (
             data_str,
             data_str.upper(),
@@ -3719,6 +3872,21 @@ class SetBonusListGenerator(DataGenerator):
             'name'   : 'tier21',
             'bonuses': [ 1319, 1320, 1321, 1322, 1323, 1324, 1325, 1326, 1327, 1328, 1329, 1330 ],
             'tier'   : 21
+        },
+        {
+            'name'   : 'waycrests_legacy',
+            'bonuses': [ 1439 ],
+            'tier'   : 21
+        },
+        {
+            'name'   : 'gift_of_the_loa',
+            'bonuses': [ 1442 ],
+            'tier'   : 23
+        },
+        {
+            'name'   : 'keepsakes',
+            'bonuses': [ 1443 ],
+            'tier'   : 23
         }
     ]
 
@@ -3808,7 +3976,7 @@ class SetBonusListGenerator(DataGenerator):
             len(ids)
         ))
 
-        self._out.write('// Set bonus data, wow build %d\n' % self._options.build)
+        self._out.write('// Set bonus data, wow build %s\n' % self._options.build)
         self._out.write('static item_set_bonus_t __%s[%s_SIZE] = {\n' % (
             data_str,
             data_str.upper(),
@@ -3851,75 +4019,12 @@ class SetBonusListGenerator(DataGenerator):
 
         self._out.write('};\n')
 
-class RandomSuffixGenerator(DataGenerator):
+class SpellItemEnchantmentGenerator(DataGenerator):
     def __init__(self, options, data_store):
-        self._dbc = [ 'ItemRandomSuffix', 'SpellItemEnchantment' ]
-
         super().__init__(options, data_store)
 
-    def filter(self):
-        ids = set()
-        # Let's do some modest filtering here, take only "stat" enchants,
-        # and take out the test items as well
-        for id, data in self._itemrandomsuffix_db.items():
-            # of the Test, of the Paladin Testing
-            if id == 46 or id == 48:
-                continue
+        self._dbc = ['SpellName', 'SpellEffect', 'GemProperties', 'SpellItemEnchantment']
 
-            has_non_stat_enchant = False
-            # For now, naively presume type_1 of SpellItemEnchantment will tell us
-            # if it's a relevant enchantment for us (ie. a stat one )
-            for i in range(1,5):
-                item_ench = self._spellitemenchantment_db.get( getattr(data, 'id_property_%d' % i) )
-                if not item_ench:
-                    logging.debug("No item enchantment found for %s", data.name)
-                    continue
-
-                if item_ench.type_1 not in [4, 5]:
-                    has_non_stat_enchant = True
-                    break
-
-            if has_non_stat_enchant:
-                continue
-
-            ids.add( id )
-
-        return list(ids)
-
-    def generate(self, ids = None):
-        # Sort keys
-        ids.sort()
-
-        self._out.write('#define %sRAND_SUFFIX%s_SIZE (%d)\n\n' % (
-            (self._options.prefix and ('%s_' % self._options.prefix) or '').upper(),
-            (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
-            len(ids)
-        ))
-        self._out.write('// Random new-style item suffixes, wow build %d\n' % self._options.build)
-        self._out.write('static struct random_suffix_data_t __%srand_suffix%s_data[] = {\n' % (
-            self._options.prefix and ('%s_' % self._options.prefix) or '',
-            self._options.suffix and ('_%s' % self._options.suffix) or '' ))
-
-        for id in ids + [ 0 ]:
-            rs = self._itemrandomsuffix_db[id]
-
-            fields  = rs.field('id', 'name')
-            fields += [ '{ %s }' % ', '.join(rs.field('id_property_1', 'id_property_2', 'id_property_3', 'id_property_4', 'id_property_5')) ]
-            fields += [ '{ %s }' % ', '.join(rs.field('property_pct_1', 'property_pct_2', 'property_pct_3', 'property_pct_4', 'property_pct_5')) ]
-            try:
-                self._out.write('  { %s },' % (', '.join(fields)))
-            except:
-                print(fields)
-                sys.exit(1)
-            self._out.write('\n')
-
-        self._out.write('};\n')
-
-class SpellItemEnchantmentGenerator(RandomSuffixGenerator):
-    def __init__(self, options, data_store):
-        RandomSuffixGenerator.__init__(self, options, data_store)
-
-        self._dbc += ['SpellName', 'SpellEffect', 'GemProperties']
         if options.build < 23436:
             self._dbc.append('Item-sparse')
         else:
@@ -3935,7 +4040,7 @@ class SpellItemEnchantmentGenerator(RandomSuffixGenerator):
         return 0
 
     def initialize(self):
-        if not RandomSuffixGenerator.initialize(self):
+        if not super().initialize():
             return False
 
         self._data_store.link('SpellEffect', self._options.build < 25600 and 'id_spell' or 'id_parent', 'SpellName', 'add_effect' )
@@ -3961,7 +4066,7 @@ class SpellItemEnchantmentGenerator(RandomSuffixGenerator):
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(ids)
         ))
-        self._out.write('// Item enchantment data, wow build %d\n' % self._options.build)
+        self._out.write('// Item enchantment data, wow build %s\n' % self._options.build)
         self._out.write('static struct item_enchantment_data_t __%sspell_item_ench%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
             self._options.suffix and ('_%s' % self._options.suffix) or '' ))
@@ -4005,7 +4110,7 @@ class RandomPropertyPointsGenerator(DataGenerator):
             (self._options.suffix and ('_%s' % self._options.suffix) or '').upper(),
             len(ids)
         ))
-        self._out.write('// Random property points for item levels 1-%d, wow build %d\n' % (
+        self._out.write('// Random property points for item levels 1-%d, wow build %s\n' % (
             self._options.scale_ilevel, self._options.build ))
         self._out.write('static struct random_prop_data_t __%srand_prop_points%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -4015,6 +4120,11 @@ class RandomPropertyPointsGenerator(DataGenerator):
             rpp = self._randproppoints_db[id]
 
             fields = rpp.field('id', 'damage_replace_stat')
+            if self._options.build >= dbc.WowVersion(8, 2, 0, 0):
+                fields += rpp.field('damage_secondary')
+            else:
+                fields += '0'
+
             fields += [ '{ %s }' % ', '.join(rpp.field('epic_points_1', 'epic_points_2', 'epic_points_3', 'epic_points_4', 'epic_points_5')) ]
             fields += [ '{ %s }' % ', '.join(rpp.field('rare_points_1', 'rare_points_2', 'rare_points_3', 'rare_points_4', 'rare_points_5')) ]
             fields += [ '{ %s }' % ', '.join(rpp.field('uncm_points_1', 'uncm_points_2', 'uncm_points_3', 'uncm_points_4', 'uncm_points_5')) ]
@@ -4038,7 +4148,7 @@ class WeaponDamageDataGenerator(DataGenerator):
         for dbname in self._dbc:
             db = getattr(self, '_%s_db' % dbname.lower() )
 
-            self._out.write('// Item damage data from %s.dbc, ilevels 1-%d, wow build %d\n' % (
+            self._out.write('// Item damage data from %s.dbc, ilevels 1-%d, wow build %s\n' % (
                 dbname, self._options.scale_ilevel, self._options.build ))
             self._out.write('static struct item_scale_data_t __%s%s%s_data[] = {\n' % (
                 self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -4070,7 +4180,7 @@ class ArmorValueDataGenerator(DataGenerator):
         for dbname in self._dbc:
             db = getattr(self, '_%s_db' % dbname.lower() )
 
-            self._out.write('// Item armor values data from %s.dbc, ilevels 1-%d, wow build %d\n' % (
+            self._out.write('// Item armor values data from %s.dbc, ilevels 1-%d, wow build %s\n' % (
                 dbname, self._options.scale_ilevel, self._options.build ))
 
             self._out.write('static struct %s __%s%s%s_data[] = {\n' % (
@@ -4105,7 +4215,7 @@ class ArmorSlotDataGenerator(DataGenerator):
         return None
 
     def generate(self, ids = None):
-        s = '// Inventory type based armor multipliers, wow build %d\n' % ( self._options.build )
+        s = '// Inventory type based armor multipliers, wow build %s\n' % ( self._options.build )
 
         self._out.write('static struct item_armor_type_data_t __%sarmor_slot%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -4136,7 +4246,7 @@ class GemPropertyDataGenerator(DataGenerator):
 
     def generate(self, ids = None):
         ids.sort()
-        self._out.write('// Gem properties, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Gem properties, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct gem_property_data_t __%sgem_property%s_data[] = {\n' % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
@@ -4165,7 +4275,7 @@ class ItemBonusDataGenerator(DataGenerator):
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._itembonustreenode_db.keys()) + 1))
 
-        self._out.write('// Item bonus trees, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Item bonus trees, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct item_bonus_tree_entry_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
@@ -4185,7 +4295,7 @@ class ItemBonusDataGenerator(DataGenerator):
         )
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._itembonus_db.keys()) + 1))
-        self._out.write('// Item bonuses, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Item bonuses, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct item_bonus_entry_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
@@ -4204,7 +4314,7 @@ class ItemBonusDataGenerator(DataGenerator):
         )
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._itemxbonustree_db.keys()) + 1))
-        self._out.write('// Item bonus map, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Item bonus map, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct item_bonus_node_entry_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
@@ -4243,7 +4353,7 @@ class ScalingStatDataGenerator(DataGenerator):
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._scalingstatdistribution_db.keys()) + 1))
 
-        self._out.write('// Scaling stat distributions, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Scaling stat distributions, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct scaling_stat_distribution_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
@@ -4262,7 +4372,7 @@ class ScalingStatDataGenerator(DataGenerator):
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._curvepoint_db.keys()) + 1))
 
-        self._out.write('// Curve points data, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Curve points data, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct curve_point_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
@@ -4288,7 +4398,7 @@ class ItemNameDescriptionDataGenerator(DataGenerator):
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._itemnamedescription_db.keys()) + 1))
 
-        self._out.write('// Item name descriptions, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Item name descriptions, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct item_name_description_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
@@ -4313,14 +4423,17 @@ class ItemChildEquipmentGenerator(DataGenerator):
 
         self._out.write('#define %s_SIZE (%d)\n\n' % (data_str.upper(), len(self._itemchildequipment_db.keys()) + 1))
 
-        self._out.write('// Item child equipment, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Item child equipment, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static struct item_child_equipment_t __%s_data[%s_SIZE] = {\n' % (data_str, data_str.upper()))
 
         for key in sorted(self._itemchildequipment_db.keys()) + [0,]:
             data = self._itemchildequipment_db[key]
 
-            fields = data.field( 'id', self._options.build < 25600 and 'id_item' or 'id_parent', 'id_child' )
+            if self._options.build >= dbc.WowVersion(8, 1, 0, 27826):
+                fields = data.field( 'id', 'id_item', 'id_child' )
+            else:
+                fields = data.field( 'id', self._options.build < 25600 and 'id_item' or 'id_parent', 'id_child' )
             self._out.write('  { %s },\n' % (', '.join(fields)))
 
         self._out.write('};\n\n')
@@ -4329,7 +4442,8 @@ class AzeriteDataGenerator(DataGenerator):
     def __init__(self, options, data_store = None):
         super().__init__(options, data_store)
 
-        self._dbc = [ 'AzeriteEmpoweredItem', 'AzeritePower', 'AzeritePowerSetMember', 'SpellName', 'ItemSparse' ]
+        self._dbc = [ 'AzeriteEmpoweredItem', 'AzeritePower', 'AzeritePowerSetMember', 'SpellName',
+            'ItemSparse', 'AzeriteItemMilestonePower' ]
 
     def filter(self):
         ids = set()
@@ -4360,6 +4474,21 @@ class AzeriteDataGenerator(DataGenerator):
 
             ids.add(power.id)
 
+        if self._options.build >= dbc.WowVersion(8, 2, 0, 30080):
+            for id, data in self._azeriteitemmilestonepower_db.items():
+                power = self._azeritepower_db[data.id_power]
+                if power.id != data.id_power:
+                    continue
+
+                if power.id_spell == 0:
+                    continue
+
+                spell = self._spellname_db[power.id_spell]
+                if spell.id != power.id_spell:
+                    continue
+
+                ids.add(power.id)
+
         return list(ids)
 
     def generate(self, ids = None):
@@ -4368,49 +4497,184 @@ class AzeriteDataGenerator(DataGenerator):
             self._options.suffix and ('_%s' % self._options.suffix) or '',
         )
 
-        self._out.write('// Azerite powers, wow build %d\n' % ( self._options.build ))
+        self._out.write('// Azerite powers, wow build %s\n' % ( self._options.build ))
 
         self._out.write('static constexpr std::array<azerite_power_entry_t, %d> __%s_data { {\n' % (
             len(ids), data_str))
 
         for id in sorted(ids):
             entry = self._azeritepower_db[id]
+            spell = self._spellname_db[entry.id_spell]
             fields = entry.field('id', 'id_spell', 'id_bonus')
-            fields += self._spellname_db[entry.id_spell].field('name')
+            fields += spell.field('name')
+            # Azerite essence stuff needs special handling, fake a tier 0 for
+            # them since they are not "real" azerite powers
+            if spell.name == 'Perseverance' or id in [574, 581]:
+                fields += self._azeritepowersetmember_db[0].field('tier')
+            else:
+                for id, data in self._azeritepowersetmember_db.items():
+                    if data.id_parent == 1:
+                        continue
+
+                    if entry.id != data.id_power:
+                        continue
+                    fields += data.field('tier')
+                    break
 
             self._out.write('  { %s },\n' % ', '.join(fields))
 
         self._out.write('} };\n')
 
-class NpcArmorMitigationValues(DataGenerator):
+class AzeriteEssenceDataGenerator(DataGenerator):
+    def __init__(self, options, data_store = None):
+        super().__init__(options, data_store)
+
+        self._dbc = ['AzeriteEssence', 'AzeriteEssencePower']
+
+    def generate(self, ids = None):
+        ids = sorted(self._azeriteessence_db.keys())
+        data_str = "%sazerite_essence%s" % (
+            self._options.prefix and ('%s_' % self._options.prefix) or '',
+            self._options.suffix and ('_%s' % self._options.suffix) or '',
+        )
+
+        self._out.write('// Azerite Essences, wow build %s\n' % ( self._options.build ))
+
+        self._out.write('static constexpr std::array<azerite_essence_entry_t, %d> __%s_data { {\n' % (
+            len(ids), data_str))
+
+        for id in ids:
+            entry = self._azeriteessence_db[id]
+            fields = entry.field('id', 'category', 'name')
+
+            self._out.write('  { %s },\n' % ', '.join(fields))
+
+        self._out.write('} };\n\n')
+
+        ids = sorted(self._azeriteessencepower_db.values(), key = lambda x: (x.id_essence, x.rank))
+
+        data_str = "%sazerite_essence_power%s" % (
+            self._options.prefix and ('%s_' % self._options.prefix) or '',
+            self._options.suffix and ('_%s' % self._options.suffix) or '',
+        )
+
+        self._out.write('// Azerite Essence Powers, wow build %s\n' % ( self._options.build ))
+
+        self._out.write('static constexpr std::array<azerite_essence_power_entry_t, %d> __%s_data { {\n' % (
+            len(ids), data_str))
+
+        for entry in ids:
+            fields = entry.field('id', 'id_essence', 'rank')
+
+            fields.append('{ %s }' % ', '.join(entry.field('id_spell_major_base', 'id_spell_minor_base')))
+            fields.append('{ %s }' % ', '.join(entry.field('id_spell_major_upgrade', 'id_spell_minor_upgrade')))
+
+            self._out.write('  { %s }, // %s\n' % (', '.join(fields), self._azeriteessence_db[entry.id_essence].name))
+
+        self._out.write('} };\n')
+
+class ArmorMitigationConstantValues(DataGenerator):
     def __init__(self, options, data_store = None):
         super().__init__(options, data_store)
 
         self._dbc = ['ExpectedStat']
 
     def generate(self, ids = None):
-        data_str = "%snpc_armor_constants%s" % (
+        data_str = "%sarmor_mitigation_constants%s" % (
             self._options.prefix and ('%s_' % self._options.prefix) or '',
             self._options.suffix and ('_%s' % self._options.suffix) or '',
         )
 
         filtered_entries = [
             v for _, v in self._expectedstat_db.items()
-                if v.id_expansion == -2 and v.id_parent <= self._options.level
+                if v.id_expansion == -2 and v.id_parent <= self._options.level + 3
         ]
         entries = sorted(filtered_entries, key = lambda v: v.id_parent)
 
-        self._out.write('// Npc armor mitigation constants (K-values), wow build %d\n' %
+        self._out.write('// Armor mitigation constants (K-values), wow build %s\n' %
                 self._options.build)
 
         self._out.write('static constexpr std::array<double, %d> __%s_data { {\n' % (
             len(entries), data_str))
 
         for index in range(0, len(entries), 5):
-            self._out.write('  {: >7.2f}, {: >7.2f}, {: >7.2f}, {: >7.2f}, {: >7.2f},\n'.format(
-                entries[index].armor_constant, entries[index + 1].armor_constant,
-                entries[index + 2].armor_constant,
-                entries[index + 3].armor_constant,
-                entries[index + 4].armor_constant))
+            n_entries = min(len(entries) - index, 5)
+            values = [
+                '{: >8.3f}'.format(entries[index + value_idx].armor_constant)
+                    for value_idx in range(0, n_entries)
+            ]
+
+            self._out.write('  {},\n'.format(', '.join(values)))
 
         self._out.write('} };\n')
+
+class NpcArmorValues(DataGenerator):
+    def __init__(self, options, data_store = None):
+        super().__init__(options, data_store)
+
+        self._dbc = ['ExpectedStat']
+
+    def generate(self, ids = None):
+        data_str = "%snpc_armor%s" % (
+            self._options.prefix and ('%s_' % self._options.prefix) or '',
+            self._options.suffix and ('_%s' % self._options.suffix) or '',
+        )
+
+        filtered_entries = [
+            v for _, v in self._expectedstat_db.items()
+                if v.id_expansion == -2 and v.id_parent <= self._options.level + 3
+        ]
+        entries = sorted(filtered_entries, key = lambda v: v.id_parent)
+
+        self._out.write('// Npc base armor values, wow build %s\n' %
+                self._options.build)
+
+        self._out.write('static constexpr std::array<double, %d> __%s_data { {\n' % (
+            len(entries), data_str))
+
+        for index in range(0, len(entries), 5):
+            n_entries = min(len(entries) - index, 5)
+            values = [
+                '{: >8.3f}'.format(entries[index + value_idx].creature_armor)
+                    for value_idx in range(0, n_entries)
+            ]
+
+            self._out.write('  {},\n'.format(', '.join(values)))
+
+        self._out.write('} };\n')
+
+
+class TactKeyGenerator(DataGenerator):
+    def __init__(self, options, data_store = None):
+        super().__init__(options, data_store)
+
+        self._dbc = ['TactKey', 'TactKeyLookup']
+
+    def generate(self, ids = None):
+        map_ = {}
+
+        for id, data in self._tactkeylookup_db.items():
+            vals = []
+            for idx in range(0, 8):
+                vals.append('{:02x}'.format(getattr(data, 'key_name_{}'.format(idx + 1))))
+
+            map_[id] = {'id': id, 'key_name': ''.join(vals), 'key': None}
+
+
+        for id, data in self._tactkey_db.items():
+            if id not in map_:
+                map_[id] = {'id': id, 'key_name': None, 'key': None}
+
+            vals = []
+            for idx in range(0, 16):
+                vals.append('{:02x}'.format(getattr(data, 'key_{}'.format(idx + 1))))
+            map_[id]['key'] = ''.join(vals)
+
+        out = []
+        for v in sorted(map_.keys()):
+            data = map_[v]
+            out.append("  {{ \"id\": {:-3d}, \"key_id\": \"{}\", \"key\": {:34s} }}".format(
+                v, data['key_name'], data['key'] and "\"{}\"".format(data['key']) or "null"))
+
+        self._out.write('[\n{}\n]'.format(',\n'.join(out)))
+

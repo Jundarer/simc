@@ -9,7 +9,9 @@
 #include <unordered_map>
 #include <functional>
 
+#include "sc_util.hpp"
 #include "util/rapidjson/document.h"
+#include "report/sc_report.hpp"
 
 #include "sc_timespan.hpp"
 
@@ -39,13 +41,6 @@ class azerite_state_t;
  */
 class azerite_power_t
 {
-  /// Time type conversion for azerite_power_t::time_value
-  enum time_type
-  {
-    MS = 0,
-    S,
-  };
-
   /// Actor the power belongs to
   const player_t*             m_player;
   /// Associated spell data
@@ -60,6 +55,13 @@ class azerite_power_t
   /// Helper to check if the combat rating penalty needs to be applied to the azerite spell effect
   bool check_combat_rating_penalty( size_t index = 1 ) const;
 public:
+  /// Time type conversion for azerite_power_t::time_value
+  enum time_type
+  {
+    MS = 0,
+    S,
+  };
+
   using azerite_value_fn_t = std::function<double(const azerite_power_t&)>;
 
   azerite_power_t();
@@ -99,6 +101,81 @@ public:
   const azerite_power_entry_t* data() const;
 };
 
+enum class essence_type : unsigned
+{
+  INVALID,      /// Unknown essence
+  MAJOR,        /// Major Azerite Essence
+  MINOR,        /// Minor Azerite Essence
+  PASSIVE       /// "Passive" Azerite Essence (travel nodes between minor/major ones)
+};
+
+enum class essence_spell : unsigned
+{
+  BASE = 0u,
+  UPGRADE
+};
+
+class azerite_essence_t
+{
+  /// Actor reference
+  const player_t*                          m_player;
+  /// Azerite essence entry
+  const azerite_essence_entry_t*           m_essence;
+  /// Associated major essence power spells
+  std::vector<const spell_data_t*>         m_base_major, m_base_minor;
+  /// Associated minor essence power spells
+  std::vector<const spell_data_t*>         m_upgrade_major, m_upgrade_minor;
+  /// Actor's power rank for the essence type
+  unsigned                                 m_rank;
+  /// Actor's used essence type
+  essence_type                             m_type;
+
+public:
+  azerite_essence_t();
+  /// Invalid constructor, contains actor pointer
+  azerite_essence_t( const player_t* player );
+  /// Major/Minor constructor
+  azerite_essence_t( const player_t* player, essence_type t, unsigned rank,
+      const azerite_essence_entry_t* essence );
+  /// Passives constructor
+  azerite_essence_t( const player_t* player, const spell_data_t* passive );
+
+  /// Is Azerite Essence enabled?
+  bool enabled() const;
+
+  const player_t* player() const
+  { return m_player; }
+
+  const char* name() const
+  { return m_essence->name; }
+
+  unsigned rank() const
+  { return m_rank; }
+
+  bool is_minor() const
+  { return m_type == essence_type::MINOR; }
+
+  bool is_major() const
+  { return m_type == essence_type::MAJOR; }
+
+  bool is_passive() const
+  { return m_type == essence_type::PASSIVE; }
+
+  // Accessor to return neck item
+  const item_t* item() const;
+
+  /// Fetch a specific rank minor/major/passive spell pointer of the essence base or upgrade spell
+  const spell_data_t* spell( unsigned rank, essence_spell s, essence_type t = essence_type::INVALID ) const;
+  /// Fetch a specific rank minor/major/passive spell pointer of the essence base spell
+  const spell_data_t* spell( unsigned rank, essence_type t = essence_type::INVALID ) const;
+  /// Fetch a specific rank minor/major/passive spell reference of the essence base or upgrade spell
+  const spell_data_t& spell_ref( unsigned rank, essence_spell s, essence_type t = essence_type::INVALID ) const;
+  /// Fetch a specific rank minor/major/passive spell reference of the essence base spell
+  const spell_data_t& spell_ref( unsigned rank, essence_type t = essence_type::INVALID ) const;
+  /// Fetch base or upgrade spell pointers of all essence ranks
+  std::vector<const spell_data_t*> spells( essence_spell s = essence_spell::BASE, essence_type t = essence_type::INVALID ) const;
+};
+
 namespace azerite
 {
 /**
@@ -111,6 +188,8 @@ class azerite_state_t
   player_t*                          m_player;
   /// Map of the actor's azerite power ids, and their associated items (items that select the power)
   std::unordered_map<unsigned, std::vector<const item_t*>> m_items;
+  /// Map of the actor's azerite power spell ids, and their associated items (items that select the power that uses the spell)
+  std::unordered_map<unsigned, std::vector<const item_t*>> m_spell_items;
   /// Azerite power overrides, (power, list of override ilevels)
   std::unordered_map<unsigned, std::vector<unsigned>> m_overrides;
 
@@ -144,24 +223,100 @@ public:
   void copy_overrides( const std::unique_ptr<azerite_state_t>& other );
 
   /// Create azerite-related expressions
-  expr_t* create_expression( const std::vector<std::string>& expr_str ) const;
+  std::unique_ptr<expr_t> create_expression( const std::vector<std::string>& expr_str ) const;
 
   /// Enabled azerite spells
   std::vector<unsigned> enabled_spells() const;
+
+  // Generate HTML report table output for the azerite data
+  report::sc_html_stream& generate_report( report::sc_html_stream& root ) const;
+};
+
+class azerite_essence_state_t
+{
+  class slot_state_t
+  {
+    essence_type m_type;
+    unsigned     m_id;
+    unsigned     m_rank;
+
+    public:
+      slot_state_t() : m_type( essence_type::INVALID ), m_id( 0u ), m_rank( 0u )
+      { }
+
+      slot_state_t( essence_type t, unsigned id, unsigned rank ) :
+        m_type( t ), m_id( id ), m_rank( rank )
+      { }
+
+      unsigned rank() const
+      { return m_rank; }
+
+      bool enabled() const
+      { return rank() != 0; }
+
+      unsigned id() const
+      { return m_id; }
+
+      essence_type type() const
+      { return m_type; }
+
+      std::string str() const
+      {
+        return util::to_string( m_id ) + ":" +
+               util::to_string( m_rank ) + ":" +
+               ( type() == essence_type::MAJOR ? '1' : '0' );
+      }
+  };
+
+  const player_t*           m_player;
+  std::vector<slot_state_t> m_state;
+  std::string               m_option_str;
+
+public:
+  azerite_essence_state_t( const player_t* player );
+
+  azerite_essence_t get_essence( unsigned id ) const;
+  azerite_essence_t get_essence( const std::string& name, bool tokenized = false ) const;
+
+  /// Add an azerite essence
+  bool add_essence( essence_type type, unsigned id, unsigned rank );
+
+  /// Clone state from another actor
+  void copy_state( const std::unique_ptr<azerite_essence_state_t>& other );
+
+  bool parse_azerite_essence( sim_t*, const std::string& /* name */, const std::string& /* value */ );
+
+  /// Create essence-related expressions
+  std::unique_ptr<expr_t> create_expression( const std::vector<std::string>& expr_str ) const;
+
+  std::vector<unsigned> enabled_essences() const;
+
+  std::string option_str() const;
+
+  void update_traversal_nodes();
+
+  // Generate HTML report table output for the azerite data
+  report::sc_html_stream& generate_report( report::sc_html_stream& root ) const;
 };
 
 /// Creates an azerite state object for the actor
 std::unique_ptr<azerite_state_t> create_state( player_t* );
+/// Creates an azerite essence state object for the actor
+std::unique_ptr<azerite_essence_state_t> create_essence_state( player_t* );
 /// Initialize azerite powers through the generic special effect subsystem
 void initialize_azerite_powers( player_t* actor );
-/// Register generic azerite powers to the special effect system
+/// Initialize azerite essences  through the generic special effect subsystem
+void initialize_azerite_essences( player_t* actor );
+/// Register generic azerite and azerite essence powers to the special effect system
 void register_azerite_powers();
-/// Register generic azerite powers target data initializers
+/// Register generic azerite and azerite essence powers target data initializers
 void register_azerite_target_data_initializers( sim_t* );
+/// Create major Azerite Essence actions
+action_t* create_action( player_t* p, const std::string& name, const std::string& options );
 
 /// Compute the <min, avg, max> value of the spell effect given, based on the azerite power
 std::tuple<int, int, int> compute_value( const azerite_power_t& power,
-    const spelleffect_data_t* effect );
+    const spelleffect_data_t& effect );
 
 /// Parse azerite item information from the Blizzard Community API JSON output
 void parse_blizzard_azerite_information( item_t& item, const rapidjson::Value& data );
@@ -171,8 +326,8 @@ namespace special_effects
 void resounding_protection( special_effect_t& effect );
 void elemental_whirl( special_effect_t& effect );
 void blood_siphon( special_effect_t& effect );
-void lifespeed(special_effect_t& effect);
-void on_my_way(special_effect_t& effect);
+void lifespeed( special_effect_t& effect );
+void on_my_way( special_effect_t& effect );
 void champion_of_azeroth( special_effect_t& effect );
 void unstable_flames( special_effect_t& );
 void thunderous_blast( special_effect_t& );
@@ -205,7 +360,43 @@ void synaptic_spark_capacitor( special_effect_t& );
 void ricocheting_inflatable_pyrosaw( special_effect_t& );
 void gutripper( special_effect_t& );
 void battlefield_focus_precision( special_effect_t& );
+void endless_hunger( special_effect_t& effect );
+void apothecarys_concoctions( special_effect_t& effect );
+void shadow_of_elune( special_effect_t& effect );
+void treacherous_covenant( special_effect_t& effect );
+void seductive_power( special_effect_t& effect );
+void bonded_souls( special_effect_t& effect );
+void fight_or_flight( special_effect_t& effect );
+void undulating_tides( special_effect_t& effect );
+void loyal_to_the_end( special_effect_t& effect );
+void arcane_heart( special_effect_t& effect );
+void clockwork_heart( special_effect_t& effect );
+void personcomputer_interface( special_effect_t& effect );
 } // Namespace special_effects ends
+
+namespace azerite_essences
+{
+void stamina_milestone( special_effect_t& effect );
+void the_crucible_of_flame( special_effect_t& effect );
+void essence_of_the_focusing_iris( special_effect_t& effect );
+void blood_of_the_enemy( special_effect_t& effect );
+void condensed_life_force( special_effect_t& effect );
+void conflict_and_strife( special_effect_t& effect );
+void purification_protocol( special_effect_t& effect );
+void ripple_in_space( special_effect_t& effect );
+void the_unbound_force( special_effect_t& effect );
+void worldvein_resonance( special_effect_t& effect );
+void strive_for_perfection( special_effect_t& effect );
+void vision_of_perfection( special_effect_t& effect );
+void anima_of_life_and_death( special_effect_t& effect );
+void nullification_dynamo( special_effect_t& effect );
+void aegis_of_the_deep( special_effect_t& effect );
+void sphere_of_suppression( special_effect_t& effect );
+void breath_of_the_dying( special_effect_t& effect );
+} // Namepsace azerite_essences ends
+
+// Vision of Perfection CDR helper
+double vision_of_perfection_cdr( const azerite_essence_t& essence );
 
 } // Namespace azerite ends
 

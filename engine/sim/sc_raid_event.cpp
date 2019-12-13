@@ -270,7 +270,7 @@ struct adds_event_t : public raid_event_t
           }
         }
 
-        adds[ i ]->summon( saved_duration );
+        adds[ i ]->summon( duration_time() );
         adds[ i ]->x_position = x_offset + spawn_x_coord;
         adds[ i ]->y_position = y_offset + spawn_y_coord;
 
@@ -292,6 +292,10 @@ struct adds_event_t : public raid_event_t
 
   void _finish() override
   {
+    if ( adds.size() < adds_to_remove )
+    {
+      adds_to_remove = adds.size( );
+    }
     for ( size_t i = 0; i < adds_to_remove; i++ )
     {
       adds[ i ]->dismiss();
@@ -313,7 +317,7 @@ struct move_enemy_t : public raid_event_t
       x_coord( 0.0 ),
       y_coord( 0.0 ),
       name( "" ),
-      enemy( 0 ),
+      enemy( nullptr ),
       original_x( 0.0 ),
       original_y( 0.0 )
   {
@@ -385,12 +389,12 @@ struct casting_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     sim->target->debuffs.casting->increment();
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     sim->target->debuffs.casting->decrement();
   }
@@ -410,7 +414,7 @@ struct distraction_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     for ( auto p : affected_players )
     {
@@ -418,7 +422,7 @@ struct distraction_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     for ( auto p : affected_players )
     {
@@ -477,7 +481,7 @@ struct invulnerable_event_t : public raid_event_t
     if ( retarget )
     {
       range::for_each( sim->player_non_sleeping_list,
-                       [this]( player_t* p ) { p->acquire_target( ACTOR_INVULNERABLE, target ); } );
+                       [this]( player_t* p ) { p->acquire_target( retarget_source::ACTOR_INVULNERABLE, target ); } );
     }
   }
 
@@ -488,7 +492,7 @@ struct invulnerable_event_t : public raid_event_t
     if ( retarget )
     {
       range::for_each( sim->player_non_sleeping_list,
-                       [this]( player_t* p ) { p->acquire_target( ACTOR_VULNERABLE, target ); } );
+                       [this]( player_t* p ) { p->acquire_target( retarget_source::ACTOR_VULNERABLE, target ); } );
     }
   }
 };
@@ -502,12 +506,12 @@ struct flying_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     sim->target->debuffs.flying->increment();
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     sim->target->debuffs.flying->decrement();
   }
@@ -532,7 +536,7 @@ struct movement_ticker_t : public event_t
       duration = next_execute( players );
     }
   }
-  virtual const char* name() const override
+  const char* name() const override
   {
     return "Player Movement Event";
   }
@@ -584,7 +588,7 @@ struct movement_ticker_t : public event_t
 struct movement_event_t : public raid_event_t
 {
   double move_distance;
-  movement_direction_e direction;
+  movement_direction_type direction;
   std::string move_direction;
   double distance_range;
   double move;
@@ -595,7 +599,7 @@ struct movement_event_t : public raid_event_t
   movement_event_t( sim_t* s, const std::string& options_str )
     : raid_event_t( s, "movement" ),
       move_distance( 0 ),
-      direction( MOVEMENT_TOWARDS ),
+      direction( movement_direction_type::TOWARDS ),
       distance_range( 0 ),
       move(),
       distance_min( 0 ),
@@ -654,12 +658,14 @@ struct movement_event_t : public raid_event_t
     }
   }
 
-  virtual void _start() override
+  void _start() override
   {
-    movement_direction_e m = direction;
-    if ( direction == MOVEMENT_RANDOM )
+    movement_direction_type m = direction;
+    if ( direction == movement_direction_type::RANDOM )
     {
-      m = static_cast<movement_direction_e>( int( sim->rng().range( MOVEMENT_RANDOM_MIN, MOVEMENT_RANDOM_MAX ) ) );
+      auto min = static_cast<int>(movement_direction_type::OMNI);
+      auto max_exclusive = static_cast<int>(movement_direction_type::RANDOM);
+      m = static_cast<movement_direction_type>( int( sim->rng().range(min, max_exclusive) ) );
     }
 
     if ( distance_range > 0 )
@@ -695,7 +701,7 @@ struct movement_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
   }
 };
@@ -709,7 +715,7 @@ struct stun_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     for ( auto p : affected_players )
     {
@@ -720,7 +726,7 @@ struct stun_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     for ( auto p : affected_players )
     {
@@ -746,7 +752,7 @@ struct interrupt_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     for ( auto p : affected_players )
     {
@@ -754,7 +760,7 @@ struct interrupt_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
   }
 };
@@ -769,7 +775,7 @@ struct damage_event_t : public raid_event_t
   school_e damage_type;
 
   damage_event_t( sim_t* s, const std::string& options_str )
-    : raid_event_t( s, "damage" ), amount( 1 ), amount_range( 0 ), raid_damage( 0 )
+    : raid_event_t( s, "damage" ), amount( 1 ), amount_range( 0 ), raid_damage( nullptr )
   {
     std::string type_str = "holy";
     add_option( opt_float( "amount", amount ) );
@@ -786,7 +792,7 @@ struct damage_event_t : public raid_event_t
     damage_type = util::parse_school_type( type_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     if ( !raid_damage )
     {
@@ -814,7 +820,7 @@ struct damage_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
   }
 };
@@ -827,8 +833,10 @@ struct heal_event_t : public raid_event_t
   double amount_range;
   double to_pct, to_pct_range;
 
+  heal_t* raid_heal;
+
   heal_event_t( sim_t* s, const std::string& options_str )
-    : raid_event_t( s, "heal" ), amount( 1 ), amount_range( 0 ), to_pct( 0 ), to_pct_range( 0 )
+    : raid_event_t( s, "heal" ), amount( 1 ), amount_range( 0 ), to_pct( 0 ), to_pct_range( 0 ), raid_heal( nullptr )
   {
     add_option( opt_float( "amount", amount ) );
     add_option( opt_float( "amount_range", amount_range ) );
@@ -842,8 +850,25 @@ struct heal_event_t : public raid_event_t
     }
   }
 
-  virtual void _start() override
+  void _start() override
   {
+    if ( !raid_heal )
+    {
+      struct raid_heal_t : public heal_t
+      {
+        raid_heal_t( const char* n, player_t* player ) : heal_t( n, player, spell_data_t::nil() )
+        {
+          school      = SCHOOL_HOLY;
+          may_crit    = false;
+          background  = true;
+          trigger_gcd = timespan_t::zero();
+        }
+      };
+
+      raid_heal = new raid_heal_t( name.empty() ? type.c_str() : name.c_str(), sim -> active_player );
+      raid_heal -> init();
+    }
+
     for ( auto p : affected_players )
     {
       double amount_to_heal = 0.0;
@@ -865,15 +890,16 @@ struct heal_event_t : public raid_event_t
       else
       {
         amount_to_heal = sim->rng().range( amount - amount_range, amount + amount_range );
-        p->resource_gain( RESOURCE_HEALTH, amount_to_heal );
       }
 
       // heal if there's any healing to be done
       if ( amount_to_heal > 0.0 )
       {
-        sim->print_log( "{} heals {} for '{}'.", *this, p->name(), amount_to_heal );
+        raid_heal -> base_dd_min = raid_heal -> base_dd_max = amount_to_heal;
+        raid_heal -> target = p;
+        raid_heal -> execute();
 
-        p->resource_gain( RESOURCE_HEALTH, amount_to_heal );
+        sim -> print_log( "Event {} healed {} for '{}' (before player modifiers).", name.c_str(), p -> name(), amount_to_heal );
       }
     }
   }
@@ -901,7 +927,7 @@ struct damage_taken_debuff_event_t : public raid_event_t
     }
   }
 
-  virtual void _start() override
+  void _start() override
   {
     for ( auto p : affected_players )
     {
@@ -930,7 +956,7 @@ struct damage_done_buff_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     for ( auto p : affected_players )
     {
@@ -939,7 +965,7 @@ struct damage_done_buff_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     for ( auto p : affected_players )
     {
@@ -961,12 +987,12 @@ struct vulnerable_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     sim->target->debuffs.vulnerable->increment( 1, multiplier );
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     sim->target->debuffs.vulnerable->decrement();
   }
@@ -981,7 +1007,7 @@ struct position_event_t : public raid_event_t
     parse_options( options_str );
   }
 
-  virtual void _start() override
+  void _start() override
   {
     for ( auto p : affected_players )
     {
@@ -992,7 +1018,7 @@ struct position_event_t : public raid_event_t
     }
   }
 
-  virtual void _finish() override
+  void _finish() override
   {
     for ( auto p : affected_players )
     {
@@ -1001,7 +1027,7 @@ struct position_event_t : public raid_event_t
   }
 };
 
-expr_t* parse_player_if_expr( player_t& player, const std::string& expr_str )
+std::unique_ptr<expr_t> parse_player_if_expr( player_t& player, const std::string& expr_str )
 {
   if ( expr_str.empty() )
     return nullptr;
@@ -1020,7 +1046,7 @@ expr_t* parse_player_if_expr( player_t& player, const std::string& expr_str )
   if ( player.sim->debug )
     expression::print_tokens( tokens, player.sim );
 
-  if ( expr_t* e = expression::build_player_expression_tree( player, tokens, player.sim->optimize_expressions ) )
+  if ( auto e = expression::build_player_expression_tree( player, tokens, player.sim->optimize_expressions ) )
     return e;
 
   throw std::invalid_argument("No player expression found");
@@ -1222,7 +1248,7 @@ void raid_event_t::start()
     auto& expr_uptr = player_expressions[ p->actor_index ];
     if ( !expr_uptr )
     {
-      expr_uptr = std::unique_ptr<expr_t>( parse_player_if_expr( *p, player_if_expr_str ) );
+      expr_uptr = parse_player_if_expr( *p, player_if_expr_str );
     }
 
     if ( expr_uptr && !expr_uptr->success() )
@@ -1298,12 +1324,12 @@ void raid_event_t::combat_begin()
     {
     }
 
-    virtual const char* name() const override
+    const char* name() const override
     {
       return raid_event->type.c_str();
     }
 
-    virtual void execute() override
+    void execute() override
     {
       raid_event->deactivate();
       raid_event->end_event = nullptr;
@@ -1318,12 +1344,12 @@ void raid_event_t::combat_begin()
     {
     }
 
-    virtual const char* name() const override
+    const char* name() const override
     {
       return raid_event->type.c_str();
     }
 
-    virtual void execute() override
+    void execute() override
     {
       raid_event->activate();
       raid_event->start_event = nullptr;
@@ -1366,12 +1392,12 @@ void raid_event_t::schedule()
     {
     }
 
-    virtual const char* name() const override
+    const char* name() const override
     {
       return raid_event->type.c_str();
     }
 
-    virtual void execute() override
+    void execute() override
     {
       if ( raid_event->is_up )
       {
@@ -1389,12 +1415,12 @@ void raid_event_t::schedule()
     {
     }
 
-    virtual const char* name() const override
+    const char* name() const override
     {
       return raid_event->type.c_str();
     }
 
-    virtual void execute() override
+    void execute() override
     {
       raid_event->saved_duration = raid_event->duration_time();
       raid_event->start();
@@ -1458,7 +1484,24 @@ void raid_event_t::parse_options( const std::string& options_str )
   if ( options_str.empty() )
     return;
 
-  opts::parse( sim, type, options, options_str );
+  opts::parse( sim, type, options, options_str,
+    [ this ]( opts::parse_status status, const std::string& name, const std::string& value ) {
+      // Fail parsing if strict parsing is used and the option is not found
+      if ( sim->strict_parsing && status == opts::parse_status::NOT_FOUND )
+      {
+        return opts::parse_status::FAILURE;
+      }
+
+      // .. otherwise, just warn that there's an unknown option
+      if ( status == opts::parse_status::NOT_FOUND )
+      {
+        sim->error( "Warning: Unknown raid event '{}' option '{}' with value '{}', ignoring",
+          name, name, value );
+      }
+
+      return status;
+    } );
+  
 
   if ( !affected_role_str.empty() )
   {
@@ -1570,7 +1613,7 @@ void raid_event_t::init( sim_t* sim )
       sim->print_debug( "Successfully created '{}'.", *( raid_event.get() ) );
       sim->raid_events.push_back( std::move( raid_event ) );
     }
-    catch ( const std::exception& ex )
+    catch ( const std::exception& )
     {
       std::throw_with_nested(std::invalid_argument(fmt::format("Error creating raid event from '{}'", split)));
     }
@@ -1705,9 +1748,9 @@ double raid_event_t::evaluate_raid_event_expression( sim_t* s, std::string& type
 
   if ( filter == "amount" )
   {
-    if ( auto dmg_event = dynamic_cast<damage_event_t*>( e ) )
+    if ( auto result_amount_typevent = dynamic_cast<damage_event_t*>( e ) )
     {
-      return dmg_event->amount;
+      return result_amount_typevent->amount;
     }
     else
     {

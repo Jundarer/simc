@@ -29,6 +29,8 @@ struct player_t;
  */
 namespace util
 {
+stat_e highest_stat( const player_t* p, const std::vector<stat_e>& stat );
+
 double wall_time();
 double cpu_time();
 
@@ -46,7 +48,7 @@ const char* resource_type_string      ( resource_e );
 const char* result_type_string        ( result_e type );
 const char* block_result_type_string  ( block_result_e type );
 const char* full_result_type_string   ( full_result_e fulltype );
-const char* amount_type_string        ( dmg_e type );
+const char* amount_type_string        ( result_amount_type type );
 const char* school_type_string        ( school_e school );
 const char* armor_type_string         ( int type );
 const char* armor_type_string         ( item_subclass_armor type );
@@ -67,10 +69,10 @@ const char* weapon_class_string       ( int weapon_class );
 const char* weapon_subclass_string    ( int subclass );
 const char* item_quality_string       ( int quality );
 const char* specialization_string     ( specialization_e spec );
-const char* movement_direction_string( movement_direction_e );
+const char* movement_direction_string( movement_direction_type );
 const char* class_id_string( player_e type );
 const char* spec_string_no_class( const player_t&p );
-const char* retarget_event_string     ( retarget_event_e );
+const char* retarget_event_string     ( retarget_source );
 const char* buff_refresh_behavior_string   ( buff_refresh_behavior );
 const char* buff_stack_behavior_string   ( buff_stack_behavior );
 const char* buff_tick_behavior_string   ( buff_tick_behavior );
@@ -85,7 +87,7 @@ resource_e  translate_power_type      ( power_e );
 stat_e      power_type_to_stat        ( power_e );
 
 attribute_e parse_attribute_type ( const std::string& name );
-dmg_e parse_dmg_type             ( const std::string& name );
+result_amount_type parse_dmg_type ( const std::string& name );
 meta_gem_e parse_meta_gem_type   ( const std::string& name );
 player_e parse_player_type       ( const std::string& name );
 pet_e parse_pet_type             ( const std::string& name );
@@ -101,7 +103,7 @@ stat_e parse_stat_type           ( const std::string& name );
 scale_metric_e parse_scale_metric( const std::string& name );
 profile_source parse_profile_source( const std::string& name );
 specialization_e parse_specialization_type( const std::string &name );
-movement_direction_e parse_movement_direction( const std::string& name );
+movement_direction_type parse_movement_direction( const std::string& name );
 item_subclass_armor parse_armor_type( const std::string& name );
 weapon_e parse_weapon_type       ( const std::string& name );
 
@@ -120,7 +122,10 @@ race_e translate_race_id( int rid );
 bool is_alliance( race_e );
 bool is_horde( race_e );
 stat_e translate_item_mod( int item_mod );
+rating_e stat_to_rating( stat_e );
 bool is_combat_rating( item_mod_type t );
+bool is_combat_rating( stat_e t );
+bool is_primary_stat( stat_e );
 int translate_stat( stat_e stat );
 stat_e translate_attribute( attribute_e attribute );
 stat_e translate_rating_mod( unsigned ratings );
@@ -164,6 +169,8 @@ int fprintf(std::FILE* stream, Format&& format, Args&& ... args)
 
 std::string encode_html( const std::string& );
 std::string decode_html( const std::string& );
+// Strips away all non-underscore, non-alphanumeric ASCII characters from the string.
+std::string remove_special_chars( const std::string& );
 void urlencode( std::string& str );
 void urldecode( std::string& str );
 std::string uchar_to_hex( unsigned char );

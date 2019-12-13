@@ -4,6 +4,7 @@
 // ==========================================================================
 
 #include <cerrno>
+#include <memory>
 
 #include "simulationcraft.hpp"
 
@@ -11,6 +12,237 @@
 
 namespace
 {
+bool prune_specialized_execute_actions_internal( std::vector<action_t*>& apl, execute_type e,
+  std::vector<std::vector<action_t*>*>& visited )
+{
+  if ( range::find( visited, &apl ) != visited.end() )
+    return true;
+  else
+    visited.push_back( &apl );
+
+  auto it = apl.begin();
+  // Prune out any call/run/swap_action list call from the list of actions, if the called apl has no
+  // actions of the required type.
+  while ( it != apl.end() )
+  {
+    action_priority_list_t* alist = nullptr;
+    action_t* action = *it;
+
+    if ( action->type == ACTION_CALL )
+    {
+      alist = static_cast<const call_action_list_t*>( action )->alist;
+    }
+    else if ( util::str_compare_ci( action->name_str, "run_action_list" ) ||
+              util::str_compare_ci( action->name_str, "swap_action_list" ) )
+    {
+      alist = static_cast<const swap_action_list_t*>( action )->alist;
+    }
+
+    if ( alist )
+    {
+      bool state;
+      switch ( e )
+      {
+        case execute_type::OFF_GCD:
+          alist->player->sim->print_debug( "{} traversing APL {}, n_actions={} ({})",
+            alist->player->name(), alist->name_str, alist->off_gcd_actions.size(),
+            e == execute_type::OFF_GCD ? "off-gcd" : "cast-while-casting" );
+          state = prune_specialized_execute_actions_internal( alist->off_gcd_actions, e, visited );
+          break;
+        case execute_type::CAST_WHILE_CASTING:
+          alist->player->sim->print_debug( "{} traversing APL {}, n_actions={} ({})",
+            alist->player->name(), alist->name_str, alist->cast_while_casting_actions.size(),
+            e == execute_type::OFF_GCD ? "off-gcd" : "cast-while-casting" );
+          state = prune_specialized_execute_actions_internal( alist->cast_while_casting_actions, e, visited );
+          break;
+        default:
+          state = false;
+          break;
+      }
+
+      if ( !state )
+      {
+        alist->player->sim->print_debug( "{} pruning {} from APL ({})",
+          alist->player->name(), (*it)->signature_str,
+          e == execute_type::OFF_GCD ? "off-gcd" : "cast-while-casting" );
+        it = apl.erase( it );
+      }
+      else
+      {
+        ++it;
+      }
+    }
+    else
+    {
+      ++it;
+    }
+  }
+
+  return apl.size() > 0;
+}
+
+bool prune_specialized_execute_actions( std::vector<action_t*>& apl, execute_type e )
+{
+  std::vector<std::vector<action_t*>*> visited;
+  return prune_specialized_execute_actions_internal( apl, e, visited );
+}
+
+// Specialized execute for off-gcd and cast-while-casting execution of abilities. Both cases need to
+// perform a subset of the normal foreground execution process, and also have to take into account
+// execution-type specific bookkeeping on the actor level.
+template <typename T>
+struct special_execute_event_t : public player_event_t
+{
+  special_execute_event_t( player_t& p, timespan_t delta_time ) :
+    player_event_t( p, delta_time )
+  { }
+
+  void execute() override
+  {
+    ptr() = nullptr;
+
+    execute_action();
+
+    // Create a new specialized execute check event only in the case we didnt find anything to queue
+    // (could use an ability right away) and the action we executed was not a run_action_list.
+    //
+    // Note also that a new specialized execute check event may have been created in do_execute() if
+    // this event execution found an off gcd action to execute, in this case, do not create new
+    // event.
+    reschedule();
+  }
+
+  // Select and execute a specialized action based on the execution type (currently off-gcd or cast
+  // while casting)
+  virtual void execute_action()
+  {
+    // Dynamically regenerating actors must be regenerated before selecting an action, otherwise
+    // resource-specific expressions may not function properly.
+    if ( p()->resource_regeneration == regen_type::DYNAMIC)
+    {
+      p()->do_dynamic_regen();
+    }
+
+    p()->visited_apls_ = 0;
+
+    action_t* a = p()->select_action( apl(), type() );
+
+    if ( p()->restore_action_list )
+    {
+      p()->activate_action_list( p()->restore_action_list, type() );
+      p()->restore_action_list = nullptr;
+    }
+
+    if ( a == nullptr )
+    {
+      return;
+    }
+
+    // Don't attempt to execute an action that's already being queued (this should not happen
+    // anyhow)
+    if ( p()->queueing && p()->queueing->internal_id == a->internal_id )
+    {
+      return;
+    }
+
+    // Don't queue the action if the specialized execution interval would elapse before the action
+    // is usable again
+    if ( usable( a ) )
+    {
+      // If we're queueing something, it's something different from what we are about to do.
+      // Cancel existing queued action, and queue the new one.
+      if ( p()->queueing )
+      {
+        event_t::cancel( p()->queueing->queue_event );
+        p()->queueing = nullptr;
+      }
+
+      a->queue_execute( type() );
+    }
+  }
+
+  // Type of specialized action execute
+  virtual execute_type type() const = 0;
+  // Base list of actions that is being run for the action execute
+  virtual action_priority_list_t& apl() const = 0;
+  // Pointer to the player-object event tracking member variable (holds this event object)
+  virtual event_t*& ptr() = 0;
+  // Is a selected action usable during the specialized execute interval (a GCD, or a cast/channel
+  // time)
+  virtual bool usable( const action_t* a ) const = 0;
+  // Perform a reschedule of the polling event if applicable
+  virtual void reschedule() = 0;
+};
+
+struct player_gcd_event_t : public special_execute_event_t<player_gcd_event_t>
+{
+  player_gcd_event_t( player_t& p, timespan_t delta_time ) :
+    special_execute_event_t( p, delta_time )
+  {
+    sim().print_debug( "New Player-Ready-GCD Event: {}", p.name() );
+  }
+
+  const char* name() const override
+  { return "Player-Ready-GCD"; }
+
+  execute_type type() const override
+  { return execute_type::OFF_GCD; }
+
+  action_priority_list_t& apl() const override
+  { return *p()->active_off_gcd_list; }
+
+  event_t*& ptr() override
+  { return p()->off_gcd; }
+
+  void reschedule() override
+  { p()->schedule_off_gcd_ready(); }
+
+  // Action is only usable while a GCD is elapsing, and the action is queueable before the ready
+  // event occurs
+  bool usable( const action_t* a ) const override
+  { return a->usable_during_current_gcd(); }
+
+  void execute_action() override
+  {
+    // It is possible to orchestrate events such that an action is currently executing when an
+    // off-gcd event occurs, if this is the case, don't do anything
+    if ( p()->executing )
+    {
+      return;
+    }
+
+    special_execute_event_t<player_gcd_event_t>::execute_action();
+  }
+};
+
+struct player_cwc_event_t : public special_execute_event_t<player_cwc_event_t>
+{
+  player_cwc_event_t( player_t& p, timespan_t delta_time ) :
+    special_execute_event_t( p, delta_time )
+  {
+    sim().print_debug( "New Player-Ready-Cast-While-Casting Event: {}", p.name() );
+  }
+
+  const char* name() const override
+  { return "Player-Ready-Cast-While-Casting"; }
+
+  execute_type type() const override
+  { return execute_type::CAST_WHILE_CASTING; }
+
+  action_priority_list_t& apl() const override
+  { return *p()->active_cast_while_casting_list; }
+
+  event_t*& ptr() override
+  { return p()->cast_while_casting_poll_event; }
+
+  bool usable( const action_t* a ) const override
+  { return a->usable_during_current_cast(); }
+
+  void reschedule() override
+  { p()->schedule_cwc_ready(); }
+
+};
+
 // Player Ready Event =======================================================
 
 struct player_ready_event_t : public player_event_t
@@ -20,12 +252,15 @@ struct player_ready_event_t : public player_event_t
     if ( sim().debug )
       sim().out_debug.printf( "New Player-Ready Event: %s", p.name() );
   }
-  virtual const char* name() const override
+  const char* name() const override
   {
     return "Player-Ready";
   }
-  virtual void execute() override
+  void execute() override
   {
+    p()->readying = nullptr;
+    p()->current_execute_type = execute_type::FOREGROUND;
+
     // There are certain chains of events where an off-gcd ability can be queued such that the queue
     // time for the action exceeds Player-Ready event (essentially end of GCD). In this case, the
     // simple solution is to just cancel the queue execute and let the actor select an action from
@@ -37,6 +272,9 @@ struct player_ready_event_t : public player_event_t
     }
     // Player that's checking for off gcd actions to use, cancels that checking when there's a ready event firing.
     event_t::cancel( p()->off_gcd );
+    // Also cancel checks during casting, since player-ready event by definition means that the
+    // actor is not going to be casting.
+    event_t::cancel( p()->cast_while_casting_poll_event );
 
     if ( !p()->execute_action() )
     {
@@ -130,13 +368,13 @@ struct execute_pet_action_t : public action_t
     action_t::init_finished();
   }
 
-  virtual void execute() override
+  void execute() override
   {
     assert(pet_action);
     pet_action->execute();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( !pet )
     {
@@ -177,6 +415,35 @@ struct leech_t : public heal_t
     heal_t::init();
 
     snapshot_flags = update_flags = STATE_MUL_DA | STATE_TGT_MUL_DA | STATE_VERSATILITY | STATE_MUL_PERSISTENT;
+  }
+};
+
+struct invulnerable_debuff_t : public buff_t
+{
+  invulnerable_debuff_t( player_t* p ) :
+    buff_t( p, "invulnerable" )
+  {
+    set_max_stack( 1 );
+  }
+
+  void start( int stacks, double value, timespan_t duration ) override
+  {
+    buff_t::start( stacks, value, duration );
+    if ( sim->ignore_invulnerable_targets && range::contains_value( sim->target_non_sleeping_list, player ) )
+    {
+      sim->target_non_sleeping_list.find_and_erase_unordered( player );
+      sim->active_enemies--;
+    }
+  }
+
+  void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
+  {
+    buff_t::expire_override( expiration_stacks, remaining_duration );
+    if ( sim->ignore_invulnerable_targets && !range::contains_value( sim->target_non_sleeping_list, player ) )
+    {
+      sim->target_non_sleeping_list.push_back( player );
+      sim->active_enemies++;
+    }
   }
 };
 
@@ -238,20 +505,20 @@ bool parse_talent_url( sim_t* sim, const std::string& name, const std::string& u
     ++cut_pt;
     if ( url.find( ".battle.net" ) != url.npos || url.find( ".battlenet.com" ) != url.npos )
     {
-      if ( sim->talent_format == TALENT_FORMAT_UNCHANGED )
-        sim->talent_format = TALENT_FORMAT_ARMORY;
+      if ( sim->talent_input_format == talent_format::UNCHANGED )
+        sim->talent_input_format = talent_format::ARMORY;
       return p->parse_talents_armory( url.substr( cut_pt ) );
     }
     else if ( url.find( "worldofwarcraft.com" ) != url.npos || url.find( "www.wowchina.com" ) != url.npos )
     {
-      if ( sim->talent_format == TALENT_FORMAT_UNCHANGED )
-        sim->talent_format = TALENT_FORMAT_ARMORY;
+      if ( sim->talent_input_format == talent_format::UNCHANGED )
+        sim->talent_input_format = talent_format::ARMORY;
       return p->parse_talents_armory2( url );
     }
     else if ( url.find( ".wowhead.com" ) != url.npos )
     {
-      if ( sim->talent_format == TALENT_FORMAT_UNCHANGED )
-        sim->talent_format = TALENT_FORMAT_WOWHEAD;
+      if ( sim->talent_input_format == talent_format::UNCHANGED )
+        sim->talent_input_format = talent_format::WOWHEAD;
       std::string::size_type end = url.find( '|', cut_pt );
       return p->parse_talents_wowhead( url.substr( cut_pt, end - cut_pt ) );
     }
@@ -265,8 +532,8 @@ bool parse_talent_url( sim_t* sim, const std::string& name, const std::string& u
 
     if ( all_digits )
     {
-      if ( sim->talent_format == TALENT_FORMAT_UNCHANGED )
-        sim->talent_format = TALENT_FORMAT_NUMBERS;
+      if ( sim->talent_input_format == talent_format::UNCHANGED )
+        sim->talent_input_format = talent_format::NUMBERS;
       p->parse_talents_numbers( url );
       return true;
     }
@@ -313,6 +580,48 @@ bool parse_timeofday( sim_t* sim, const std::string& name, const std::string& ov
   else
   {
     sim->errorf( "\n%s timeofday string \"%s\" not valid.\n", sim->active_player->name(), override_str.c_str() );
+    return false;
+  }
+
+  return true;
+}
+
+// parse_loa ====================================================
+
+bool parse_loa( sim_t* sim, const std::string& name, const std::string& override_str )
+{
+  assert( name == "zandalari_loa" );
+  ( void )name;
+
+  player_t* p = sim->active_player;
+
+  if ( util::str_compare_ci( override_str, "akunda" ) || util::str_compare_ci( override_str, "embrace_of_akunda" ) )
+  {
+    p->zandalari_loa = player_t::AKUNDA;
+  }
+  else if ( util::str_compare_ci( override_str, "bwonsamdi" ) || util::str_compare_ci( override_str, "embrace_of_bwonsamdi" ) )
+  {
+    p->zandalari_loa = player_t::BWONSAMDI;
+  }
+  else if ( util::str_compare_ci( override_str, "gonk" ) || util::str_compare_ci( override_str, "embrace_of_gonk" ) )
+  {
+    p->zandalari_loa = player_t::GONK;
+  }
+  else if ( util::str_compare_ci( override_str, "kimbul" ) || util::str_compare_ci( override_str, "embrace_of_kimbul" ) )
+  {
+    p->zandalari_loa = player_t::KIMBUL;
+  }
+  else if ( util::str_compare_ci( override_str, "kragwa" ) || util::str_compare_ci( override_str, "embrace_of_kragwa" ) )
+  {
+    p->zandalari_loa = player_t::KRAGWA;
+  }
+  else if ( util::str_compare_ci( override_str, "paku" ) || util::str_compare_ci( override_str, "embrace_of_paku" ) )
+  {
+    p->zandalari_loa = player_t::PAKU;
+  }
+  else
+  {
+    sim->errorf( "\n%s zandalari_loa string \"%s\" not valid.\n", sim->active_player->name(), override_str.c_str() );
     return false;
   }
 
@@ -575,12 +884,12 @@ void residual_action::trigger( action_t* residual_action, player_t* t, double am
                                 amount );
     }
 
-    virtual const char* name() const override
+    const char* name() const override
     {
       return "residual_action_delay_event";
     }
 
-    virtual void execute() override
+    void execute() override
     {
       // Don't ignite on targets that are not active
       if ( target->is_sleeping() )
@@ -611,7 +920,7 @@ void residual_action::trigger( action_t* residual_action, player_t* t, double am
       action_state_t* s = action->get_state();
       s->target         = target;
       s->result         = RESULT_HIT;
-      action->snapshot_state( s, action->type == ACTION_HEAL ? HEAL_OVER_TIME : DMG_OVER_TIME );
+      action->snapshot_state( s, action->type == ACTION_HEAL ? result_amount_type::HEAL_OVER_TIME : result_amount_type::DMG_OVER_TIME );
       s->result_amount = additional_residual_amount;
       action->schedule_travel( s );
       if ( !action->dual )
@@ -624,7 +933,7 @@ void residual_action::trigger( action_t* residual_action, player_t* t, double am
   make_event<delay_event_t>( *residual_action->sim, t, residual_action, amount );
 }
 
-player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
+player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ):
   actor_t( s, n ),
   type( t ),
   parent( nullptr ),
@@ -645,17 +954,18 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
   combat_reach( 1.0 ),
   profile_source_( profile_source::DEFAULT ),
   default_target( nullptr ),
-  target( 0 ),
+  target( nullptr ),
   initialized( false ),
   potion_used( false ),
   region_str( s->default_region_str ),
   server_str( s->default_server_str ),
   origin_str(),
   timeofday( DAY_TIME ),  // Set to Day by Default since in raid it always switches to Day, user can override.
+  zandalari_loa( PAKU ), //Set loa to paku by default (as it has some gain for any role if not optimal), user can override
   gcd_ready( timespan_t::zero() ),
   base_gcd( timespan_t::from_seconds( 1.5 ) ),
   min_gcd( timespan_t::from_millis( 750 ) ),
-  gcd_haste_type( HASTE_NONE ),
+  gcd_type(gcd_haste_type::NONE ),
   gcd_current_haste_value( 1.0 ),
   started_waiting( timespan_t::min() ),
   pet_list(),
@@ -677,6 +987,7 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
   cooldown_tolerance_( timespan_t::min() ),
   dbc( s->dbc ),
   talent_points(),
+  profession(),
   artifact( nullptr ),
   azerite( nullptr ),
   base(),
@@ -693,17 +1004,19 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
   resources(),
   // Consumables
   // Events
-  executing( 0 ),
-  queueing( 0 ),
-  channeling( 0 ),
-  strict_sequence( 0 ),
-  readying( 0 ),
-  off_gcd( 0 ),
+  executing( nullptr ),
+  queueing( nullptr ),
+  channeling( nullptr ),
+  strict_sequence( nullptr ),
+  readying( nullptr ),
+  off_gcd( nullptr ),
+  cast_while_casting_poll_event(),
   off_gcd_ready( timespan_t::min() ),
+  cast_while_casting_ready( timespan_t::min() ),
   in_combat( false ),
   action_queued( false ),
   first_cast( true ),
-  last_foreground_action( 0 ),
+  last_foreground_action( nullptr ),
   prev_gcd_actions( 0 ),
   off_gcdactions(),
   cast_delay_reaction( timespan_t::zero() ),
@@ -711,11 +1024,12 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
   callbacks( s ),
   use_apl( "" ),
   // Actions
-  use_default_action_list( 0 ),
+  use_default_action_list( false ),
   precombat_action_list( 0 ),
   active_action_list(),
   default_action_list(),
   active_off_gcd_list(),
+  active_cast_while_casting_list(),
   restore_action_list(),
   no_action_list_provided(),
   // Reporting
@@ -775,12 +1089,13 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
   active_during_iteration( false ),
   _mastery( spelleffect_data_t::nil() ),
   cache( this ),
-  regen_type( REGEN_STATIC ),
+  resource_regeneration( regen_type::STATIC ),
   last_regen( timespan_t::zero() ),
   regen_caches( CACHE_MAX ),
   dynamic_regen_pets( false ),
   visited_apls_( 0 ),
   action_list_id_( 0 ),
+  current_execute_type( execute_type::FOREGROUND ),
   has_active_resource_callbacks( false ),
   resource_threshold_trigger()
 {
@@ -795,6 +1110,7 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
   if ( ! is_enemy() && ! is_pet() )
   {
     azerite = azerite::create_state( this );
+    azerite_essence = azerite::create_essence_state( this );
   }
 
   // Set the gear object to a special default value, so we can support gear_x=0 properly.
@@ -804,7 +1120,7 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
 
   base.skill              = sim->default_skill;
   base.mastery            = 8.0;
-  base.movement_direction = MOVEMENT_NONE;
+  base.movement_direction = movement_direction_type::NONE;
 
   if ( !is_enemy() && type != HEALING_ENEMY )
   {
@@ -825,7 +1141,7 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
     index = -( ++( sim->num_enemies ) );
   }
 
-  // Fill healng lists with all non-enemy players.
+  // Fill healing lists with all non-enemy players.
   if ( !is_enemy() )
   {
     if ( !is_pet() )
@@ -846,8 +1162,6 @@ player_t::player_t( sim_t* s, player_e t, const std::string& n, race_e r ) :
     current.skill = 1.0;
 
   resources.infinite_resource[ RESOURCE_HEALTH ] = true;
-
-  range::fill( profession, 0 );
 
   if ( !is_pet() )
   {
@@ -953,22 +1267,19 @@ std::string player_t::base_initial_current_t::to_string()
   return s.str();
 }
 
-// player_t::init ===========================================================
-
 void player_t::init()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing player %s", name() );
+  sim->print_debug( "Initializing {}.", *this );
 
   // Ensure the precombat and default lists are the first listed
-  auto pc = get_action_priority_list( "precombat", "Executed before combat begins. Accepts non-harmful actions only." );
-  pc->used = true;
+  auto pre_combat = get_action_priority_list( "precombat", "Executed before combat begins. Accepts non-harmful actions only." );
+  pre_combat->used = true;
   get_action_priority_list( "default", "Executed every time the actor is available." );
 
   for ( auto& elem : alist_map )
   {
     if ( elem.first == "default" )
-      sim->errorf( "Ignoring action list named default." );
+      sim->error( "Ignoring action list named default." );
     else
       get_action_priority_list( elem.first )->action_list_str = elem.second;
   }
@@ -979,11 +1290,11 @@ void player_t::init()
   // no dynamically regenerating pets, we do not need to go through extra work
   // in do_dynamic_regen() to call the pets do_dynamic_regen(), saving some cpu
   // cycles.
-  if ( regen_type == REGEN_DYNAMIC )
+  if (resource_regeneration == regen_type::DYNAMIC)
   {
     for ( auto pet : pet_list )
     {
-      if ( pet->regen_type != REGEN_DYNAMIC )
+      if ( pet->resource_regeneration != regen_type::DYNAMIC)
         continue;
 
       for ( cache_e c = CACHE_NONE; c < CACHE_MAX; c++ )
@@ -1031,26 +1342,23 @@ void player_t::init_character_properties()
  */
 void player_t::init_base_stats()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing base for player (%s)", name() );
+  sim->print_debug( "Initializing base stats for {}.", *this );
 
-#ifndef NDEBUG
-  for ( stat_e i = STAT_NONE; i < STAT_MAX; ++i )
+  // Ensure base stats have not been tampered with.
+  for ( stat_e stat = STAT_NONE; stat < STAT_MAX; ++stat )
   {
-    double s = base.stats.get_stat( i );
-    if ( s > 0 )
+    double stat_value = base.stats.get_stat( stat );
+    if ( stat_value > 0 )
     {
-      sim->errorf( "%s stat %s is %.4f", name(), util::stat_type_string( i ), s );
-      sim->errorf( " Please do not modify player_t::base before init_base_stats is called\n" );
+      sim->error( "{} stat {} is {} != 0.0", name(), util::stat_type_string( stat ), stat_value );
+      sim->error( " Please do not modify player_t::base before init_base_stats is called\n" );
     }
   }
-#endif
 
   if ( !is_enemy() )
     base.rating.init( dbc, level() );
 
-  if ( sim->debug )
-    sim->out_debug.printf( "%s: Base Ratings initialized: %s", name(), base.rating.to_string().c_str() );
+  sim->print_debug( "{} base ratings initialized: {}", *this, base.rating.to_string() );
 
   if ( !is_enemy() )
   {
@@ -1106,6 +1414,7 @@ void player_t::init_base_stats()
     // players have a base 7.5% hit/exp
     base.hit       = 0.075;
     base.expertise = 0.075;
+
     if ( base.distance < 1 )
       base.distance = 5;
   }
@@ -1121,10 +1430,11 @@ void player_t::init_base_stats()
         dbc.avoid_per_str_agi_by_level( level() ) / 100.0;  // exact values given by Blizzard, only have L90-L100 data
 
   // All classes get 3% dodge and miss
-  // Dodge from base agillity isn't affected by diminishing returns and is added here
-  base.dodge = 0.03 + racials.quickness->effectN( 1 ).percent() +
-    ( dbc.race_base( race ).agility + dbc.attribute_base( type, level() ).agility ) * base.dodge_per_agility;
+  base.dodge = 0.03;
   base.miss = 0.03;
+  // Dodge from base agillity isn't affected by diminishing returns and is added here
+  base.dodge += racials.quickness->effectN( 1 ).percent() +
+      ( dbc.race_base( race ).agility + dbc.attribute_base( type, level() ).agility ) * base.dodge_per_agility;
 
   // Only Warriors and Paladins (and enemies) can block, defaults to 0
   if ( type == WARRIOR || type == PALADIN || type == ENEMY || type == TMI_BOSS || type == TANK_DUMMY )
@@ -1132,12 +1442,10 @@ void player_t::init_base_stats()
     // Set block reduction to 0 for warrior/paladin because it's computed in composite_block_reduction()
     base.block_reduction = 0;
 
-    // Base block chance is 10% for paladin, 18% for warriors
+    // Base block chance is 10% for players, warriors have a bonus 8% in their spec aura
     switch ( type )
     {
     case WARRIOR:
-      base.block = 0.18;
-      break;
     case PALADIN:
       base.block = 0.10;
       break;
@@ -1190,8 +1498,7 @@ void player_t::init_base_stats()
       collected_data.dtps.change_mode( false );
   }
 
-  if ( sim->debug )
-    sim->out_debug.printf( "%s: Generic Base Stats: %s", name(), base.to_string().c_str() );
+  sim->print_debug( "{} generic base stats: {}", *this, base.to_string() );
 }
 
 /**
@@ -1201,20 +1508,18 @@ void player_t::init_base_stats()
  */
 void player_t::init_initial_stats()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing initial stats for player (%s)", name() );
+  sim->print_debug( "Initializing initial stats for {}.", *this );
 
-#ifndef NDEBUG
-  for ( stat_e i = STAT_NONE; i < STAT_MAX; ++i )
+  // Ensure initial stats have not been tampered with.
+  for ( stat_e stat = STAT_NONE; stat < STAT_MAX; ++stat )
   {
-    double s = initial.stats.get_stat( i );
-    if ( s > 0 )
+    double stat_value = initial.stats.get_stat( stat );
+    if ( stat_value > 0 )
     {
-      sim->errorf( "%s stat %s is %.4f", name(), util::stat_type_string( i ), s );
-      sim->errorf( " Please do not modify player_t::initial before init_initial_stats is called\n" );
+      sim->error( "{} initial stat {} is {} != 0", *this, util::stat_type_string( stat ), stat_value );
+      sim->error( " Please do not modify player_t::initial before init_initial_stats is called\n" );
     }
   }
-#endif
 
   initial = base;
   initial.stats += passive;
@@ -1236,8 +1541,7 @@ void player_t::init_initial_stats()
         total_gear.add_stat( stat, gear.get_stat( stat ) );
     }
 
-    if ( sim->debug )
-      sim->out_debug.printf( "%s: Total Gear Stats: %s", name(), total_gear.to_string().c_str() );
+    sim->print_debug( "{} total gear stats: {}", *this, total_gear.to_string() );
 
     initial.stats += enchant;
     initial.stats += sim->enchant;
@@ -1245,23 +1549,21 @@ void player_t::init_initial_stats()
 
   initial.stats += total_gear;
 
-  if ( sim->debug )
-    sim->out_debug.printf( "%s: Generic Initial Stats: %s", name(), initial.to_string().c_str() );
+  sim->print_debug( "{} generic initial stats: %s", *this, initial.to_string() );
 }
 
 void player_t::init_items()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing items for player (%s)", name() );
+  sim->print_debug( "Initializing items for {}.", *this );
 
   // Create items
   for ( const std::string& split : util::string_split( items_str, "/" ) )
   {
-    if ( find_item( split ) )
+    if ( find_item_by_name( split ) )
     {
-      sim->errorf( "Player %s has multiple %s equipped.\n", name(), split.c_str() );
+      sim->error( "{} has multiple %s equipped.\n", *this, split );
     }
-    items.push_back( item_t( this, split ) );
+    items.emplace_back( this, split );
   }
 
   std::array<bool, SLOT_MAX> matching_gear_slots;  // true if the given item is equal to the highest armor type the player can wear
@@ -1270,18 +1572,17 @@ void player_t::init_items()
 
   // We need to simple-parse the items first, this will set up some base information, and parse out
   // simple options
-  for ( size_t i = 0; i < items.size(); i++ )
+  for ( auto& item : items )
   {
-    item_t& item = items[ i ];
     try
     {
-
       // If the item has been specified in options we want to start from scratch, forgetting about
       // lingering stuff from profile copy
       if ( !item.options_str.empty() )
       {
+        auto slot = item.slot;
         item      = item_t( this, item.options_str );
-        item.slot = static_cast<slot_e>( i );
+        item.slot = slot;
       }
 
       item.parse_options();
@@ -1291,7 +1592,7 @@ void player_t::init_items()
         throw std::invalid_argument("Cannot initialize data");
       }
     }
-    catch (const std::exception& e)
+    catch (const std::exception&)
     {
       std::throw_with_nested(std::runtime_error(fmt::format("Item '{}' Slot '{}'", item.name(), item.slot_name() )));
     }
@@ -1341,7 +1642,7 @@ void player_t::init_items()
         throw std::invalid_argument("Invalid type");
       }
     }
-    catch (const std::exception& e)
+    catch (const std::exception& )
     {
       std::throw_with_nested(std::runtime_error(fmt::format("Item '{}' Slot '{}'", item.name(), item.slot_name() )));
     }
@@ -1390,21 +1691,24 @@ void player_t::init_azerite()
     return;
   }
 
-  if ( sim -> debug )
-  {
-    sim -> out_debug.printf( "Initializing Azerite sub-system for player (%s)", name() );
-  }
+  sim->print_debug( "Initializing Azerite sub-system for {}.", *this );
 
   azerite -> initialize();
 }
 
 void player_t::init_meta_gem()
 {
-  if ( !meta_gem_str.empty() )
-    meta_gem = util::parse_meta_gem_type( meta_gem_str );
+  sim->print_debug( "Initializing meta-gem for {}.", *this );
 
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing meta-gem for player (%s)", name() );
+  if ( !meta_gem_str.empty() )
+  {
+    meta_gem = util::parse_meta_gem_type( meta_gem_str );
+    if ( meta_gem == META_GEM_NONE )
+    {
+      throw std::invalid_argument(fmt::format( "Invalid meta gem '{}'.", meta_gem_str ));
+    }
+  }
+
 
   if ( ( meta_gem == META_AUSTERE_EARTHSIEGE ) || ( meta_gem == META_AUSTERE_SHADOWSPIRIT ) )
   {
@@ -1414,8 +1718,7 @@ void player_t::init_meta_gem()
 
 void player_t::init_position()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing position for player (%s)", name() );
+  sim->print_debug( "Initializing position for {}.", *this );
 
   if ( !position_str.empty() )
   {
@@ -1445,14 +1748,12 @@ void player_t::init_position()
 
   position_str = util::position_type_string( base.position );
 
-  if ( sim->debug )
-    sim->out_debug.printf( "%s: Position set to %s", name(), position_str.c_str() );
+  sim->print_debug( "{} position set to {}.", *this, position_str );
 }
 
 void player_t::init_race()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing race for player (%s)", name() );
+  sim->print_debug( "Initializing race for {}.", *this );
 
   if ( race_str.empty() )
   {
@@ -1473,14 +1774,12 @@ void player_t::init_race()
  */
 void player_t::init_defense()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing defense for player (%s)", name() );
+  sim->print_debug( "Initializing defense for {}.", *this );
 
   if ( primary_role() == ROLE_TANK )
   {
     initial.position = POSITION_FRONT;
-    if ( sim->debug )
-      sim->out_debug.printf( "%s: Initial Position set to front because primary_role() == ROLE_TANK", name() );
+    sim->print_debug( "{} initial position set to front because primary_role() == ROLE_TANK", *this );
   }
 
   if ( !is_pet() && primary_role() == ROLE_TANK )
@@ -1493,15 +1792,13 @@ void player_t::init_defense()
 
   // Armor Coefficient
   initial.armor_coeff = dbc.armor_mitigation_constant( level() );
-  if ( sim->debug )
-    sim->out_debug.printf( "%s: Initial Armor Coeff set to %.4f", name(), initial.armor_coeff );
+  sim->print_debug( "{} initial armor coefficient set to {}.", *this, initial.armor_coeff );
 }
 
 void player_t::init_weapon( weapon_t& w )
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing weapon ( type %s ) for player (%s)", util::weapon_type_string( w.type ),
-                           name() );
+  sim->print_debug( "Initializing weapon ( type {} ) for {}.", util::weapon_type_string( w.type ),
+                           *this );
 
   if ( w.type == WEAPON_NONE )
     return;
@@ -1519,8 +1816,7 @@ void player_t::create_special_effects()
     return;
   }
 
-  if ( sim->debug )
-    sim->out_debug.printf( "Creating special effects for player (%s)", name() );
+  sim->print_debug( "Creating special effects for {}.", *this );
 
   // Initialize all item-based special effects. This includes any DBC-backed enchants, gems, as well
   // as inherent item effects that use a spell
@@ -1534,11 +1830,10 @@ void player_t::create_special_effects()
   // master list of custom special effect in unique gear). This is to avoid
   // false positives with class-specific set bonuses that have to always be
   // implemented inside the class module anyhow.
-  std::vector<const item_set_bonus_t*> bonuses = sets->enabled_set_bonus_data();
-  for ( size_t i = 0; i < bonuses.size(); i++ )
+  for ( const auto& set_bonus : sets->enabled_set_bonus_data() )
   {
     special_effect_t effect( this );
-    unique_gear::initialize_special_effect( effect, bonuses[ i ]->spell_id );
+    unique_gear::initialize_special_effect( effect, set_bonus->spell_id );
 
     if ( effect.custom_init_object.size() == 0 )
     {
@@ -1569,14 +1864,15 @@ void player_t::init_special_effects()
     return;
   }
 
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing special effects for player (%s)", name() );
+  sim->print_debug( "Initializing special effects for {}.", *this );
 
   // ..and then move on to second phase initialization of all special effects.
   unique_gear::init( this );
 
   for ( auto& elem : callbacks.all_callbacks )
+  {
     elem->initialize();
+  }
 }
 
 namespace
@@ -1592,10 +1888,10 @@ double compute_max_resource( player_t* p, resource_e r )
 
   // re-ordered 2016-06-19 by Theck - initial_multiplier should do something for RESOURCE_HEALTH
   if ( r == RESOURCE_HEALTH )
-    value += floor( p->stamina() ) * p->current.health_per_stamina;
+    value += std::floor( p->stamina() ) * p->current.health_per_stamina;
 
   value *= p->resources.initial_multiplier[ r ];
-  value = floor( value );
+  value = std::floor( value );
 
   return value;
 }
@@ -1603,38 +1899,34 @@ double compute_max_resource( player_t* p, resource_e r )
 
 void player_t::init_resources( bool force )
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing resources for player (%s)", name() );
+  sim->print_debug( "Initializing resources for {}.", *this );
 
-  for ( resource_e i = RESOURCE_NONE; i < RESOURCE_MAX; i++ )
+  for ( resource_e resource = RESOURCE_NONE; resource < RESOURCE_MAX; resource++ )
   {
     // Don't reset non-forced and already-reset initial resources
-    if ( !force && resources.initial[ i ] != 0 )
+    if ( !force && resources.initial[ resource ] != 0 )
     {
       continue;
     }
 
-    double max_resource = compute_max_resource( this, i );
+    double max_resource = compute_max_resource( this, resource );
 
-    resources.initial[ i ] = max_resource;
-    resources.max[ i ]     = max_resource;
+    resources.initial[ resource ] = max_resource;
+    resources.max[ resource ]     = max_resource;
 
-    if ( resources.initial_opt[ i ] != -1.0 )
+    if ( resources.initial_opt[ resource ] != -1.0 )
     {
-      double actual_resource = std::min( max_resource, resources.initial_opt[ i ] );
+      double actual_resource = std::min( max_resource, resources.initial_opt[ resource ] );
 
-      if ( sim->debug )
-      {
-        sim->out_debug.printf( "%s resource %s overridden to %f", name(), util::resource_type_string( i ),
+      sim->print_debug( "{} resource {} overridden to {}", *this, util::resource_type_string( resource ),
                                actual_resource );
-      }
 
-      resources.current[ i ] = actual_resource;
+      resources.current[ resource ] = actual_resource;
     }
     else
     {
       // Actual "current" resource can never exceed the computed maximum resource for the actor
-      resources.current[ i ] = std::min( max_resource, resources.start_at[ i ] );
+      resources.current[ resource ] = std::min( max_resource, resources.start_at[ resource ] );
     }
   }
 
@@ -1643,11 +1935,11 @@ void player_t::init_resources( bool force )
   {
     if ( collected_data.resource_timelines.size() == 0 )
     {
-      for ( resource_e r = RESOURCE_NONE; r < RESOURCE_MAX; ++r )
+      for ( resource_e resource = RESOURCE_NONE; resource < RESOURCE_MAX; ++resource )
       {
-        if ( resources.max[ r ] > 0 )
+        if ( resources.max[ resource ] > 0 )
         {
-          collected_data.resource_timelines.emplace_back( r );
+          collected_data.resource_timelines.emplace_back( resource );
         }
       }
     }
@@ -1659,8 +1951,7 @@ void player_t::init_professions()
   if ( professions_str.empty() )
     return;
 
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing professions for player (%s)", name() );
+  sim->print_debug( "Initializing professions for {}.", *this );
 
   std::vector<std::string> splits = util::string_split( professions_str, ",/" );
 
@@ -1677,7 +1968,7 @@ void player_t::init_professions()
       {
         prof_value = std::stoi( subsplit[ 1 ] );
       }
-      catch ( const std::exception& e )
+      catch ( const std::exception& )
       {
         std::throw_with_nested(std::runtime_error(fmt::format("Could not parse profession level '{}' for profession '{}'",
             subsplit[ 1 ], prof_name)));
@@ -1827,12 +2118,12 @@ std::vector<std::string> player_t::get_racial_actions()
 {
   std::vector<std::string> actions;
 
-  actions.push_back( "blood_fury" );
-  actions.push_back( "berserking" );
-  actions.push_back( "arcane_torrent" );
-  actions.push_back( "lights_judgment" );
-  actions.push_back( "fireblood" );
-  actions.push_back( "ancestral_call" );
+  actions.emplace_back("blood_fury" );
+  actions.emplace_back("berserking" );
+  actions.emplace_back("arcane_torrent" );
+  actions.emplace_back("lights_judgment" );
+  actions.emplace_back("fireblood" );
+  actions.emplace_back("ancestral_call" );
 
   return actions;
 }
@@ -1876,10 +2167,12 @@ bool player_t::add_action( const spell_data_t* s, std::string options, std::stri
 /**
  * Adds all on use item actions for all items with their on use effect not excluded in the exclude_effects string.
  */
-void player_t::activate_action_list( action_priority_list_t* a, bool off_gcd )
+void player_t::activate_action_list( action_priority_list_t* a, execute_type type )
 {
-  if ( off_gcd )
+  if ( type == execute_type::OFF_GCD )
     active_off_gcd_list = a;
+  else if ( type == execute_type::CAST_WHILE_CASTING )
+    active_cast_while_casting_list = a;
   else
     active_action_list = a;
   a->used = true;
@@ -1892,11 +2185,10 @@ void player_t::override_talent( std::string& override_str )
   if ( cut_pt != override_str.npos && override_str.substr( cut_pt + 1, 3 ) == "if=" )
   {
     override_talent_action_t* dummy_action = new override_talent_action_t( this );
-    expr_t* expr                           = expr_t::parse( dummy_action, override_str.substr( cut_pt + 4 ) );
+    auto expr = expr_t::parse( dummy_action, override_str.substr( cut_pt + 4 ) );
     if ( !expr )
       return;
     bool success = expr->success();
-    delete expr;
     if ( !success )
       return;
     override_str = override_str.substr( 0, cut_pt );
@@ -1920,7 +2212,7 @@ void player_t::override_talent( std::string& override_str )
       talent_points.clear( row - 1 );
       if ( sim->num_players == 1 )
       {
-        sim->errorf( "talent_override: Talent row %u for player %s disabled\n", row, name() );
+        sim->error( "talent_override: Talent row {} for {} disabled.\n", row, *this );
       }
       return;
     }
@@ -1946,18 +2238,16 @@ void player_t::override_talent( std::string& override_str )
               override_str ));
         }
 
-        if ( sim->debug )
+        if ( talent_points.has_row_col( j, i ) )
         {
-          if ( talent_points.has_row_col( j, i ) )
-          {
-            sim->out_debug.printf( "talent_override: talent %s for player %s is already enabled\n",
-                                   override_str.c_str(), name() );
-          }
+          sim->print_debug( "talent_override: talent {} for {} is already enabled\n",
+                                 override_str, *this );
         }
+
         if ( sim->num_players == 1 )
         {  // To prevent spamming up raid reports, only do this with 1 player sims.
-          sim->errorf( "talent_override: talent %s for player %s replaced talent %s in tier %d\n", override_str.c_str(),
-                       name(), util::to_string( talent_points.choice( j ) + 1 ).c_str(), j + 1 );
+          sim->error( "talent_override: talent '{}' for {}s replaced talent {} in tier {}.\n", override_str,
+                       *this, talent_points.choice( j ) + 1, j + 1 );
         }
         talent_points.select_row_col( j, i );
       }
@@ -1967,8 +2257,7 @@ void player_t::override_talent( std::string& override_str )
 
 void player_t::init_talents()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing talents for player (%s)", name() );
+  sim->print_debug( "Initializing talents for {}.", *this );
 
   if ( !talent_overrides_str.empty() )
   {
@@ -1981,8 +2270,7 @@ void player_t::init_talents()
 
 void player_t::init_spells()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing spells for player (%s)", name() );
+  sim->print_debug( "Initializing spells for {}.", *this );
 
   racials.quickness             = find_racial_spell( "Quickness" );
   racials.command               = find_racial_spell( "Command" );
@@ -1999,6 +2287,7 @@ void player_t::init_spells()
   racials.viciousness           = find_racial_spell( "Viciousness" );
   racials.magical_affinity      = find_racial_spell( "Magical Affinity" );
   racials.mountaineer           = find_racial_spell( "Mountaineer" );
+  racials.brush_it_off          = find_racial_spell( "Brush It Off" );
 
   if ( !is_enemy() )
   {
@@ -2015,8 +2304,7 @@ void player_t::init_spells()
 
 void player_t::init_gains()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing gains for player (%s)", name() );
+  sim->print_debug( "Initializing gains for {}.", *this );
 
   gains.arcane_torrent      = get_gain( "arcane_torrent" );
   gains.endurance_of_niuzao = get_gain( "endurance_of_niuzao" );
@@ -2032,41 +2320,40 @@ void player_t::init_gains()
   gains.touch_of_the_grave = get_gain( "touch_of_the_grave" );
   gains.vampiric_embrace   = get_gain( "vampiric_embrace" );
   gains.leech              = get_gain( "leech" );
+  gains.embrace_of_bwonsamdi = get_gain( "embrace_of_bwonsamdi" );
 }
 
 void player_t::init_procs()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing procs for player (%s)", name() );
+  sim->print_debug( "Initializing procs for {}.", *this );
 
   procs.parry_haste = get_proc( "parry_haste" );
 }
 
 void player_t::init_uptimes()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing uptimes for player (%s)", name() );
+  sim->print_debug( "Initializing uptimes for {}.", *this );
 
-  uptimes.primary_resource_cap =
+  if ( primary_resource() )
+  {
+    uptimes.primary_resource_cap =
       get_uptime( util::inverse_tokenize( util::resource_type_string( primary_resource() ) ) + " Cap" );
+  }
 }
 
 void player_t::init_benefits()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing benefits for player (%s)", name() );
+  sim->print_debug( "Initializing benefits for {}.", *this );
 }
 
 void player_t::init_rng()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing rngs for player (%s)", name() );
+  sim->print_debug( "Initializing random number generators for {}.", *this );
 }
 
 void player_t::init_stats()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing stats for player (%s)", name() );
+  sim->print_debug( "Initializing stats for {}.", *this );
 
   if ( sim->maximize_reporting )
   {
@@ -2079,9 +2366,9 @@ void player_t::init_stats()
   {
     if ( collected_data.stat_timelines.size() == 0 )
     {
-      for ( size_t i = 0; i < stat_timelines.size(); ++i )
+      for ( stat_e stat : stat_timelines )
       {
-        collected_data.stat_timelines.emplace_back( stat_timelines[ i ] );
+        collected_data.stat_timelines.emplace_back( stat );
       }
     }
   }
@@ -2101,8 +2388,7 @@ void player_t::init_absorb_priority()
 
 void player_t::init_scaling()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Initializing scaling for player (%s)", name() );
+  sim->print_debug( "Initializing scaling for {}.", *this );
 
   if ( !is_pet() && !is_enemy() )
   {
@@ -2137,7 +2423,13 @@ void player_t::init_scaling()
 
     scaling->set( STAT_ARMOR, tank );
 
-    auto add_stat = []( double& to, double v, double d ) { if ( to + v < d ) to = d; else to += v; };
+    auto add_stat = []( double& to, double value, double lower_limit )
+      {
+      if ( to + value < lower_limit )
+        to = lower_limit;
+      else
+        to += value;
+      };
 
     if ( sim->scaling->scale_stat != STAT_NONE && scale_player )
     {
@@ -2272,8 +2564,7 @@ void player_t::create_actions()
   std::vector<std::string> skip_actions;
   if ( !action_list_skip.empty() )
   {
-    if ( sim->debug )
-      sim->out_debug.printf( "Player %s: action_list_skip=%s", name(), action_list_skip.c_str() );
+    sim->print_debug( "{} action_list_skip={}", *this, action_list_skip );
 
     skip_actions = util::string_split( action_list_skip, "/" );
   }
@@ -2298,8 +2589,7 @@ void player_t::create_actions()
         apl->action_list.emplace_back( split, "" );
     }
 
-    if ( sim->debug )
-      sim->out_debug.printf( "Player %s: actions.%s=%s", name(), apl->name_str.c_str(), apl->action_list_str.c_str() );
+    sim->print_debug( "{} actions.{}={}", *this, apl->name_str, apl->action_list_str );
 
     for ( auto& action_priority : apl->action_list )
     {
@@ -2328,8 +2618,7 @@ void player_t::create_actions()
         util::tokenize( action_name );
         if ( action_name == modify_action )
         {
-          if ( sim->debug )
-            sim->out_debug.printf( "Player %s: modify_action=%s", name(), modify_action.c_str() );
+          sim->print_debug( "{}: modify_action={}", *this, modify_action );
 
           action_options = modify_action_options;
           action_str     = modify_action + "," + modify_action_options;
@@ -2340,7 +2629,7 @@ void player_t::create_actions()
       if ( !a )
       {
         throw std::invalid_argument(
-            fmt::format("Player {} unable to create action: {}", name(), action_str));
+            fmt::format("{} unable to create action: {}", *this, action_str));
       }
 
       bool skip = false;
@@ -2394,7 +2683,7 @@ namespace
 // Only "real" off gcd actions should trigger the off gcd apl behavior since it has a performance
 // impact. Some meta-actions (call_action_list, variable, run_action_list, swap_action_list) alone
 // cannot trigger off-gcd apl behavior.
-bool is_real_off_gcd_action( const action_t* a )
+bool is_real_action( const action_t* a )
 {
   return a -> type != ACTION_CALL && a -> type != ACTION_VARIABLE &&
          ! util::str_compare_ci( a->name_str, "run_action_list" ) &&
@@ -2411,31 +2700,56 @@ void player_t::init_actions()
     {
       action -> init();
     }
-    catch (const std::exception& e)
+    catch (const std::exception&)
     {
       std::throw_with_nested(std::runtime_error(fmt::format("Action '{}'", action->name())));
     }
   }
 
   bool have_off_gcd_actions = false;
+  bool have_cast_while_casting_actions = false;
   for ( auto action : action_list )
   {
-    if ( action->action_list && action->trigger_gcd == timespan_t::zero() && !action->background &&
-         action->use_off_gcd )
+    if ( action->action_list && action->trigger_gcd == timespan_t::zero() &&
+         !action->background && action->use_off_gcd )
     {
       action->action_list->off_gcd_actions.push_back( action );
       // Optimization: We don't need to do off gcd stuff when there are no other off gcd actions
       // than "meta actions"
-      if ( is_real_off_gcd_action( action ) )
+      if ( is_real_action( action ) )
       {
         have_off_gcd_actions = true;
-        if ( action -> cooldown -> duration > timespan_t::zero() )
+        auto it = range::find( off_gcd_cd, action -> cooldown );
+        if ( it == off_gcd_cd.end() )
         {
-          auto it = range::find( off_gcd_cd, action -> cooldown );
-          if ( it == off_gcd_cd.end() )
-          {
-            off_gcd_cd.push_back( action -> cooldown );
-          }
+          off_gcd_cd.push_back( action -> cooldown );
+        }
+
+        if ( range::find( off_gcd_icd, action->internal_cooldown ) == off_gcd_icd.end() )
+        {
+          off_gcd_icd.push_back( action->internal_cooldown );
+        }
+      }
+    }
+
+    if ( action->action_list && !action->background && action->use_while_casting &&
+         action->usable_while_casting )
+    {
+      action->action_list->cast_while_casting_actions.push_back( action );
+
+      if ( is_real_action( action ) )
+      {
+        have_cast_while_casting_actions = true;
+        auto it = range::find( cast_while_casting_cd, action->cooldown );
+        if ( it == cast_while_casting_cd.end() )
+        {
+          cast_while_casting_cd.push_back( action->cooldown );
+        }
+
+        auto icd_it = range::find( cast_while_casting_icd, action->internal_cooldown );
+        if ( icd_it == cast_while_casting_icd.end() )
+        {
+          cast_while_casting_icd.push_back( action->internal_cooldown );
         }
       }
     }
@@ -2448,32 +2762,39 @@ void player_t::init_actions()
 
   if ( !default_action_list && choose_action_list != "default" )
   {
-    sim->errorf( "Action List %s not found, using default action list.\n", choose_action_list.c_str() );
+    sim->error( "Action List '{}' not found, using default action list.", choose_action_list );
     default_action_list = find_action_priority_list( "default" );
   }
 
   if ( default_action_list )
   {
+    prune_specialized_execute_actions( default_action_list->off_gcd_actions, execute_type::OFF_GCD );
+    prune_specialized_execute_actions( default_action_list->cast_while_casting_actions,
+        execute_type::CAST_WHILE_CASTING );
+
     activate_action_list( default_action_list );
     if ( have_off_gcd_actions )
-      activate_action_list( default_action_list, true );
+      activate_action_list( default_action_list, execute_type::OFF_GCD );
+
+    if ( have_cast_while_casting_actions )
+      activate_action_list( default_action_list, execute_type::CAST_WHILE_CASTING );
   }
   else
   {
-    sim->errorf( "No Default Action List available.\n" );
+    sim->error( "No Default Action List available." );
   }
 }
 
 void player_t::init_assessors()
 {
   // Target related mitigation
-  assessor_out_damage.add( assessor::TARGET_MITIGATION, []( dmg_e dmg_type, action_state_t* state ) {
+  assessor_out_damage.add( assessor::TARGET_MITIGATION, []( result_amount_type dmg_type, action_state_t* state ) {
     state->target->assess_damage( state->action->get_school(), dmg_type, state );
     return assessor::CONTINUE;
   } );
 
   // Target damage
-  assessor_out_damage.add( assessor::TARGET_DAMAGE, []( dmg_e, action_state_t* state ) {
+  assessor_out_damage.add( assessor::TARGET_DAMAGE, []( result_amount_type, action_state_t* state ) {
     state->target->do_damage( state );
     return assessor::CONTINUE;
   } );
@@ -2483,7 +2804,7 @@ void player_t::init_assessors()
   // completely from there, and only conditionally include it if logging/debugging is enabled.
   if ( sim->log || sim->debug || sim->debug_seed.size() > 0 )
   {
-    assessor_out_damage.add( assessor::LOG, [this]( dmg_e type, action_state_t* state ) {
+    assessor_out_damage.add( assessor::LOG, [this]( result_amount_type type, action_state_t* state ) {
       if ( sim->debug )
       {
         state->debug();
@@ -2491,18 +2812,18 @@ void player_t::init_assessors()
 
       if ( sim->log )
       {
-        if ( type == DMG_DIRECT )
+        if ( type == result_amount_type::DMG_DIRECT )
         {
-          sim->out_log.printf( "%s %s hits %s for %.0f %s damage (%s)", name(), state->action->name(),
-                               state->target->name(), state->result_amount,
+          sim->print_log( "{} {} hits {} for {} {} damage ({})", *this, state->action->name(),
+                               *state->target, state->result_amount,
                                util::school_type_string( state->action->get_school() ),
                                util::result_type_string( state->result ) );
         }
-        else  // DMG_OVER_TIME
+        else  // result_amount_type::DMG_OVER_TIME
         {
           dot_t* dot = state->action->get_dot( state->target );
-          sim->out_log.printf( "%s %s ticks (%d of %d) %s for %.0f %s damage (%s)", name(), state->action->name(),
-                               dot->current_tick, dot->num_ticks, state->target->name(), state->result_amount,
+          sim->print_log( "{} {} ticks ({} of {}) on {} for {} {} damage ({})", *this, state->action->name(),
+                               dot->current_tick, dot->num_ticks, *state->target, state->result_amount,
                                util::school_type_string( state->action->get_school() ),
                                util::result_type_string( state->result ) );
         }
@@ -2514,11 +2835,11 @@ void player_t::init_assessors()
   // Leech, if the player has leeching enabled (disabled by default)
   if ( spells.leech )
   {
-    assessor_out_damage.add( assessor::LEECH, [this]( dmg_e, action_state_t* state ) {
+    assessor_out_damage.add( assessor::LEECH, [this]( result_amount_type, action_state_t* state ) {
       // Leeching .. sanity check that the result type is a damaging one, so things hopefully don't
       // break in the future if we ever decide to not separate heal and damage assessing.
       double leech_pct = 0;
-      if ( ( state->result_type == DMG_DIRECT || state->result_type == DMG_OVER_TIME ) && state->result_amount > 0 &&
+      if ( ( state->result_type == result_amount_type::DMG_DIRECT || state->result_type == result_amount_type::DMG_OVER_TIME ) && state->result_amount > 0 &&
            ( leech_pct = state->action->composite_leech( state ) ) > 0 )
       {
         double leech_amount       = leech_pct * state->result_amount;
@@ -2530,7 +2851,7 @@ void player_t::init_assessors()
   }
 
   // Generic actor callbacks
-  assessor_out_damage.add( assessor::CALLBACKS, [this]( dmg_e, action_state_t* state ) {
+  assessor_out_damage.add( assessor::CALLBACKS, [this]( result_amount_type, action_state_t* state ) {
     if ( !state->action->callbacks )
     {
       return assessor::CONTINUE;
@@ -2553,7 +2874,7 @@ void player_t::init_finished()
     {
       action->init_finished();
     }
-    catch (const std::exception& e)
+    catch (const std::exception&)
     {
       std::throw_with_nested(std::runtime_error(fmt::format("Action '{}'", action->name())));
     }
@@ -2657,21 +2978,16 @@ void player_t::min_threshold_trigger()
     if ( occurs > resource_threshold_trigger->occurs() )
     {
       resource_threshold_trigger->reschedule( time_to_threshold );
-      if ( sim->debug )
-      {
-        sim->out_debug.printf( "Player %s rescheduling Resource-Threshold event: threshold=%.1f delay=%.3f", name(),
-                               threshold, time_to_threshold.total_seconds() );
-      }
+      sim->print_debug( "{} rescheduling Resource-Threshold event: threshold={} delay={}", *this,
+                               threshold, time_to_threshold );
     }
     else if ( occurs < resource_threshold_trigger->occurs() )
     {
       event_t::cancel( resource_threshold_trigger );
       resource_threshold_trigger = make_event<resource_threshold_event_t>( *sim, this, time_to_threshold );
-      if ( sim->debug )
-      {
-        sim->out_debug.printf( "Player %s recreating Resource-Threshold event: threshold=%.1f delay=%.3f", name(),
-                               threshold, time_to_threshold.total_seconds() );
-      }
+
+      sim->print_debug( "{} recreating Resource-Threshold event: threshold={} delay={}", *this,
+                               threshold, time_to_threshold );
     }
   }
   else
@@ -2681,11 +2997,9 @@ void player_t::min_threshold_trigger()
     assert( !readying );
 
     resource_threshold_trigger = make_event<resource_threshold_event_t>( *sim, this, time_to_threshold );
-    if ( sim->debug )
-    {
-      sim->out_debug.printf( "Player %s scheduling new Resource-Threshold event: threshold=%.1f delay=%.3f", name(),
-                             threshold, time_to_threshold.total_seconds() );
-    }
+
+    sim->print_debug( "{} scheduling new Resource-Threshold event: threshold={} delay={}", *this,
+                             threshold, time_to_threshold );
   }
 }
 
@@ -2696,14 +3010,14 @@ void player_t::min_threshold_trigger()
  */
 void player_t::create_buffs()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Creating Auras, Buffs, and Debuffs for player (%s)", name() );
+  sim->print_debug( "Creating Auras, Buffs, and Debuffs for {}.", *this );
 
   struct norgannons_foresight_buff_t : public buff_t
   {
     norgannons_foresight_buff_t( player_t* p ) :
-      buff_t( buff_creator_t( p, "norgannons_foresight", p->find_spell( 234797 ) ).chance( 0 ) )
+      buff_t( p, "norgannons_foresight", p->find_spell( 234797 ) )
     {
+      set_chance( 0 );
     }
 
     void expire_override( int expiration_stacks, timespan_t remaining_duration ) override
@@ -2714,20 +3028,20 @@ void player_t::create_buffs()
   };
 
   // Infinite-Stacking Buffs and De-Buffs for everyone
-  buffs.stunned   = buff_creator_t( this, "stunned" ).max_stack( 1 );
-  debuffs.casting = buff_creator_t( this, "casting" ).max_stack( 1 ).quiet( 1 );
+  buffs.stunned   = make_buff( this, "stunned" )->set_max_stack( 1 );
+  debuffs.casting = make_buff( this, "casting" )->set_max_stack( 1 )->set_quiet( true );
 
   // .. for players
-  if ( !is_enemy() )
+  if ( !is_enemy() && type != HEALING_ENEMY )
   {
     // Racials
     buffs.berserking = make_buff( this, "berserking", find_spell( 26297 ) )->add_invalidate( CACHE_HASTE );
-    buffs.stoneform  = buff_creator_t( this, "stoneform", find_spell( 65116 ) );
+    buffs.stoneform  = make_buff( this, "stoneform", find_spell( 65116 ) );
     buffs.blood_fury = make_buff<stat_buff_t>( this, "blood_fury", find_racial_spell( "Blood Fury" ) )
                            ->add_invalidate( CACHE_SPELL_POWER )
                            ->add_invalidate( CACHE_ATTACK_POWER );
-    buffs.fortitude  = buff_creator_t( this, "fortitude", find_spell( 137593 ) ).activated( false );
-    buffs.shadowmeld = buff_creator_t( this, "shadowmeld", find_spell( 58984 ) ).cd( timespan_t::zero() );
+    buffs.fortitude  = make_buff( this, "fortitude", find_spell( 137593 ) )->set_activated( false );
+    buffs.shadowmeld = make_buff( this, "shadowmeld", find_spell( 58984 ) )->set_cooldown( timespan_t::zero() );
 
     buffs.ancestral_call[ 0 ] = make_buff<stat_buff_t>( this, "rictus_of_the_laughing_skull", find_spell( 274739 ) );
     buffs.ancestral_call[ 1 ] = make_buff<stat_buff_t>( this, "zeal_of_the_burning_blade", find_spell( 274740 ) );
@@ -2739,113 +3053,166 @@ void player_t::create_buffs()
                           util::round( find_spell( 265226 ) -> effectN( 1 ).average( this, level() ) ) * 3 );
 
     buffs.archmages_greater_incandescence_agi =
-        buff_creator_t( this, "archmages_greater_incandescence_agi", find_spell( 177172 ) )
-            .add_invalidate( CACHE_AGILITY );
+        make_buff( this, "archmages_greater_incandescence_agi", find_spell( 177172 ) )
+            ->add_invalidate( CACHE_AGILITY );
     buffs.archmages_greater_incandescence_str =
-        buff_creator_t( this, "archmages_greater_incandescence_str", find_spell( 177175 ) )
-            .add_invalidate( CACHE_STRENGTH );
+        make_buff( this, "archmages_greater_incandescence_str", find_spell( 177175 ) )
+            ->add_invalidate( CACHE_STRENGTH );
     buffs.archmages_greater_incandescence_int =
-        buff_creator_t( this, "archmages_greater_incandescence_int", find_spell( 177176 ) )
-            .add_invalidate( CACHE_INTELLECT );
+        make_buff( this, "archmages_greater_incandescence_int", find_spell( 177176 ) )
+            ->add_invalidate( CACHE_INTELLECT );
 
     buffs.archmages_incandescence_agi =
-        buff_creator_t( this, "archmages_incandescence_agi", find_spell( 177161 ) ).add_invalidate( CACHE_AGILITY );
+        make_buff( this, "archmages_incandescence_agi", find_spell( 177161 ) )->add_invalidate( CACHE_AGILITY );
     buffs.archmages_incandescence_str =
-        buff_creator_t( this, "archmages_incandescence_str", find_spell( 177160 ) ).add_invalidate( CACHE_STRENGTH );
+        make_buff( this, "archmages_incandescence_str", find_spell( 177160 ) )->add_invalidate( CACHE_STRENGTH );
     buffs.archmages_incandescence_int =
-        buff_creator_t( this, "archmages_incandescence_int", find_spell( 177159 ) ).add_invalidate( CACHE_INTELLECT );
+        make_buff( this, "archmages_incandescence_int", find_spell( 177159 ) )->add_invalidate( CACHE_INTELLECT );
 
     // Legendary meta haste buff
     buffs.tempus_repit = make_buff( this, "tempus_repit", find_spell( 137590 ) )
         ->add_invalidate( CACHE_SPELL_SPEED )->set_activated( false );
 
-    buffs.darkflight = buff_creator_t( this, "darkflight", find_racial_spell( "darkflight" ) );
+    buffs.darkflight = make_buff( this, "darkflight", find_racial_spell( "darkflight" ) );
 
-    buffs.nitro_boosts = buff_creator_t( this, "nitro_boosts", find_spell( 54861 ) );
+    buffs.nitro_boosts = make_buff( this, "nitro_boosts", find_spell( 54861 ) );
 
-    buffs.amplification = buff_creator_t( this, "amplification", find_spell( 146051 ) )
-                              .add_invalidate( CACHE_MASTERY )
-                              .add_invalidate( CACHE_HASTE )
-                              .add_invalidate( CACHE_SPIRIT )
-                              .chance( 0 );
-    buffs.amplification_2 = buff_creator_t( this, "amplification_2", find_spell( 146051 ) )
-                                .add_invalidate( CACHE_MASTERY )
-                                .add_invalidate( CACHE_HASTE )
-                                .add_invalidate( CACHE_SPIRIT )
-                                .chance( 0 );
+    buffs.amplification = make_buff( this, "amplification", find_spell( 146051 ) )
+                              ->add_invalidate( CACHE_MASTERY )
+                              ->add_invalidate( CACHE_HASTE )
+                              ->add_invalidate( CACHE_SPIRIT )
+                              ->set_chance( 0 );
+    buffs.amplification_2 = make_buff( this, "amplification_2", find_spell( 146051 ) )
+                                ->add_invalidate( CACHE_MASTERY )
+                                ->add_invalidate( CACHE_HASTE )
+                                ->add_invalidate( CACHE_SPIRIT )
+                                ->set_chance( 0 );
 
-    buffs.temptation = buff_creator_t( this, "temptation", find_spell( 234143 ) )
-                           .cd( timespan_t::zero() )
-                           .chance( 1 )
-                           .default_value( 0.1 );  // Not in spelldata
+    buffs.temptation = make_buff( this, "temptation", find_spell( 234143 ) )
+                           ->set_cooldown( timespan_t::zero() )
+                           ->set_chance( 1 )
+                           ->set_default_value( 0.1 );  // Not in spelldata
 
     buffs.norgannons_foresight_ready =
-        buff_creator_t( this, "norgannons_foresight_ready", find_spell( 236380 ) ).chance( 0 );
+        make_buff( this, "norgannons_foresight_ready", find_spell( 236380 ) )->set_chance( 0 );
 
     buffs.norgannons_foresight = new norgannons_foresight_buff_t( this );
 
-    buffs.courageous_primal_diamond_lucidity = buff_creator_t( this, "lucidity", find_spell( 137288 ) );
+    buffs.courageous_primal_diamond_lucidity = make_buff( this, "lucidity", find_spell( 137288 ) );
 
-    buffs.body_and_soul = buff_creator_t( this, "body_and_soul", find_spell( 64129 ) )
-                              .max_stack( 1 )
-                              .duration( timespan_t::from_seconds( 4.0 ) );
+    buffs.body_and_soul = make_buff( this, "body_and_soul", find_spell( 64129 ) )
+                              ->set_max_stack( 1 )
+                              ->set_duration( timespan_t::from_seconds( 4.0 ) );
 
-    buffs.angelic_feather = buff_creator_t( this, "angelic_feather", find_spell( 121557 ) )
-                                .max_stack( 1 )
-                                .duration( timespan_t::from_seconds( 6.0 ) );
+    buffs.angelic_feather = make_buff( this, "angelic_feather", find_spell( 121557 ) )
+                                ->set_max_stack( 1 )
+                                ->set_duration( timespan_t::from_seconds( 6.0 ) );
 
     buffs.movement = new movement_buff_t( this );
+
+    if ( !is_pet() )
+    {
+      buffs.memory_of_lucid_dreams = make_buff<stat_buff_t>( this, "memory_of_lucid_dreams",
+        find_spell( 298357 ) );
+
+      auto memory_of_lucid_dreams = find_azerite_essence( "Memory of Lucid Dreams" );
+      buffs.lucid_dreams = make_buff<stat_buff_t>( this, "lucid_dreams", find_spell( 298343 ) );
+      buffs.lucid_dreams->add_stat( STAT_VERSATILITY_RATING,
+        memory_of_lucid_dreams.spell_ref( 3u, essence_spell::UPGRADE, essence_type::MINOR ).effectN( 1 ).average(
+          memory_of_lucid_dreams.item() ) );
+      buffs.lucid_dreams->set_quiet( memory_of_lucid_dreams.rank() < 3 );
+
+      buffs.reckless_force = make_buff( this, "reckless_force", find_spell( 302932 ) )
+        ->add_invalidate(CACHE_CRIT_CHANCE)
+        ->set_default_value( find_spell( 302932 )->effectN( 1 ).percent() );
+
+      buffs.reckless_force_counter = make_buff( this, "reckless_force_counter", find_spell( 302917 ) );
+
+      auto worldvein_resonance = find_azerite_essence( "Worldvein Resonance" );
+      buffs.lifeblood = make_buff<stat_buff_t>( this, "lifeblood", find_spell( 295137 ) );
+      buffs.lifeblood->add_stat( convert_hybrid_stat( STAT_STR_AGI_INT ), 
+        worldvein_resonance.spell( 1, essence_type::MINOR )->effectN( 5 ).average( worldvein_resonance.item() ) );
+
+      buffs.seething_rage = make_buff( this, "seething_rage", find_spell( 297126 ) )
+        ->set_default_value( find_spell( 297126 )->effectN( 1 ).percent() );
+
+      buffs.guardian_of_azeroth = make_buff( this, "guardian_of_azeroth", find_spell( 295855 ) )
+        ->set_default_value( find_spell( 295855 )->effectN( 1 ).percent() )
+        ->add_invalidate( CACHE_HASTE );
+
+      auto ripple_in_space = find_azerite_essence( "Ripple in Space" );
+      buffs.reality_shift = make_buff<stat_buff_t>( this, "reality_shift", find_spell( 302916 ) );
+      buffs.reality_shift->add_stat( convert_hybrid_stat( STAT_STR_AGI_INT ), 
+        ripple_in_space.spell_ref(1u, essence_type::MINOR).effectN( 2 ).average(
+          ripple_in_space.item() ) );
+      buffs.reality_shift->set_duration( find_spell( 302952 )->duration() 
+        + timespan_t::from_seconds( ripple_in_space.spell_ref( 2u, essence_spell::UPGRADE, essence_type::MINOR ).effectN( 1 ).base_value() / 1000 ) );
+      buffs.reality_shift->set_cooldown( find_spell( 302953 )->duration() );
+    }
   }
   // .. for enemies
   else
   {
-    debuffs.bleeding      = buff_creator_t( this, "bleeding" ).max_stack( 1 );
-    debuffs.invulnerable  = buff_creator_t( this, "invulnerable" ).max_stack( 1 );
-    debuffs.vulnerable    = buff_creator_t( this, "vulnerable" ).max_stack( 1 );
-    debuffs.flying        = buff_creator_t( this, "flying" ).max_stack( 1 );
-    debuffs.mortal_wounds = buff_creator_t( this, "mortal_wounds", find_spell( 115804 ) )
-                                .default_value( std::fabs( find_spell( 115804 )->effectN( 1 ).percent() ) );
+    debuffs.bleeding      = make_buff( this, "bleeding" )->set_max_stack( 1 );
+    debuffs.invulnerable  = new invulnerable_debuff_t( this );
+    debuffs.vulnerable    = make_buff( this, "vulnerable" )->set_max_stack( 1 );
+    debuffs.flying        = make_buff( this, "flying" )->set_max_stack( 1 );
+    debuffs.mortal_wounds = make_buff( this, "mortal_wounds", find_spell( 115804 ) )
+        ->set_default_value( std::fabs( find_spell( 115804 )->effectN( 1 ).percent() ) );
 
     // BfA Raid Damage Modifier Debuffs
-    debuffs.chaos_brand = buff_creator_t( this, "chaos_brand", find_spell( 1490 ) )
-                              .default_value( find_spell( 1490 )->effectN( 1 ).percent() )
-                              .cd( timespan_t::from_seconds( 5.0 ) );
-    debuffs.mystic_touch = buff_creator_t( this, "mystic_touch", find_spell( 113746 ) )
-                               .default_value( find_spell( 113746 )->effectN( 1 ).percent() )
-                               .cd( timespan_t::from_seconds( 5.0 ) );
+    debuffs.chaos_brand = make_buff( this, "chaos_brand", find_spell( 1490 ) )
+        ->set_default_value( find_spell( 1490 )->effectN( 1 ).percent() )
+        ->set_cooldown( timespan_t::from_seconds( 5.0 ) );
+    debuffs.mystic_touch = make_buff( this, "mystic_touch", find_spell( 113746 ) )
+        ->set_default_value( find_spell( 113746 )->effectN( 1 ).percent() )
+        ->set_cooldown( timespan_t::from_seconds( 5.0 ) );
   }
 
-  // .. for players, but only if there's a "damage taken" raid event
-  if ( sim->has_raid_event( "damage_taken" ) )
-  {
-    debuffs.damage_taken =
-        buff_creator_t( this, "damage_taken" ).duration( timespan_t::from_seconds( 20.0 ) ).max_stack( 999 );
-  }
+  // set up always since this can be applied by enemy actions and raid events.
+  debuffs.damage_taken =
+        make_buff( this, "damage_taken" )->set_duration( timespan_t::from_seconds( 20.0 ) )->set_max_stack( 999 );
 
   if ( sim->has_raid_event( "damage_done" ) )
   {
     buffs.damage_done =
-        buff_creator_t( this, "damage_done" ).max_stack( 1 ).add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER );
+        make_buff( this, "damage_done" )->set_max_stack( 1 )->add_invalidate( CACHE_PLAYER_DAMAGE_MULTIPLIER );
   }
 }
 
-item_t* player_t::find_item( const std::string& str )
+item_t* player_t::find_item_by_name( const std::string& item_name )
 {
-  for ( auto& item : items )
-    if ( str == item.name() )
-      return &item;
+  auto it = range::find_if(items, [item_name](const item_t& item) { return item_name == item.name();});
+
+  if ( it != items.end())
+  {
+    return &(*it);
+  }
 
   return nullptr;
 }
 
-item_t* player_t::find_item( unsigned item_id )
+item_t* player_t::find_item_by_id( unsigned item_id )
 {
-  for ( auto& item : items )
+  auto it = range::find_if(items, [item_id](const item_t& item) { return item_id == item.parsed.data.id;});
+
+  if ( it != items.end())
   {
-    if ( item.parsed.data.id == item_id )
-    {
-      return &( item );
-    }
+    return &(*it);
+  }
+
+  return nullptr;
+}
+
+item_t* player_t::find_item_by_use_effect_name( const std::string& effect_name )
+{
+  auto it = range::find_if(items, [effect_name](const item_t& item) {
+    return item.has_use_special_effect() && effect_name == item.special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE )->name();
+  } );
+
+  if ( it != items.end())
+  {
+    return &(*it);
   }
 
   return nullptr;
@@ -2901,7 +3268,7 @@ double player_t::composite_melee_haste() const
 
   h = 1.0 / ( 1.0 + h );
 
-  if ( !is_pet() && !is_enemy() )
+  if ( !is_pet() && !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.bloodlust->check() )
       h *= 1.0 / ( 1.0 + buffs.bloodlust->data().effectN( 1 ).percent() );
@@ -2914,6 +3281,9 @@ double player_t::composite_melee_haste() const
 
     if ( buffs.berserking->up() )
       h *= 1.0 / ( 1.0 + buffs.berserking->data().effectN( 1 ).percent() );
+
+    if ( buffs.guardian_of_azeroth->check() )
+      h *= 1.0 / ( 1.0 + buffs.guardian_of_azeroth->check_stack_value() );
 
     h *= 1.0 / ( 1.0 + racials.nimble_fingers->effectN( 1 ).percent() );
     h *= 1.0 / ( 1.0 + racials.time_is_money->effectN( 1 ).percent() );
@@ -2937,6 +3307,9 @@ double player_t::composite_melee_speed() const
   if ( buffs.galeforce_striking && buffs.galeforce_striking->check() )
     h *= 1.0 / ( 1.0 + buffs.galeforce_striking->check_value() );
 
+  if ( buffs.delirious_frenzy && buffs.delirious_frenzy->check() )
+    h *= 1.0 / ( 1.0 + buffs.delirious_frenzy->check_stack_value() );
+
   return h;
 }
 
@@ -2950,7 +3323,7 @@ double player_t::composite_melee_attack_power() const
   return ap;
 }
 
-double player_t::composite_melee_attack_power( attack_power_e type ) const
+double player_t::composite_melee_attack_power( attack_power_type type ) const
 {
   double base_ap = cache.attack_power();
   double ap = 0;
@@ -2959,7 +3332,7 @@ double player_t::composite_melee_attack_power( attack_power_e type ) const
 
   switch ( type )
   {
-    case AP_WEAPON_MH:
+    case attack_power_type::WEAPON_MAINHAND:
       if ( has_mh )
       {
         ap = base_ap + main_hand_weapon.dps * WEAPON_POWER_COEFFICIENT;
@@ -2970,7 +3343,7 @@ double player_t::composite_melee_attack_power( attack_power_e type ) const
         ap = base_ap + .5 * WEAPON_POWER_COEFFICIENT;
       }
       break;
-    case AP_WEAPON_OH:
+    case attack_power_type::WEAPON_OFFHAND:
       if ( has_oh )
       {
         ap = base_ap + off_hand_weapon.dps * WEAPON_POWER_COEFFICIENT;
@@ -2980,7 +3353,7 @@ double player_t::composite_melee_attack_power( attack_power_e type ) const
         ap = base_ap + .5 * WEAPON_POWER_COEFFICIENT;
       }
       break;
-    case AP_WEAPON_BOTH:
+    case attack_power_type::WEAPON_BOTH:
     {
       // Don't use with weapon = player -> off_hand_weapon or the OH penalty will be applied to the whole spell
       ap = ( has_mh ? main_hand_weapon.dps : .5 ) + ( has_oh ? off_hand_weapon.dps : .5 ) / 2;
@@ -3002,7 +3375,7 @@ double player_t::composite_attack_power_multiplier() const
 {
   double m = current.attack_power_multiplier;
 
-  if ( is_pet() || is_enemy() )
+  if ( is_pet() || is_enemy() || type == HEALING_ENEMY )
   {
     return 1.0;
   }
@@ -3019,8 +3392,14 @@ double player_t::composite_melee_crit_chance() const
   if ( current.attack_crit_per_agility )
     ac += ( cache.agility() / current.attack_crit_per_agility / 100.0 );
 
+  // The Unbound Force crit bonus from 20 stack proc
+  if (buffs.reckless_force)
+    ac += buffs.reckless_force->check_value();
+
   ac += racials.viciousness->effectN( 1 ).percent();
   ac += racials.arcane_acuity->effectN( 1 ).percent();
+  if(buffs.embrace_of_paku)
+    ac += buffs.embrace_of_paku->check_value();
 
   if ( timeofday == DAY_TIME )
     ac += racials.touch_of_elune->effectN( 1 ).percent();
@@ -3179,22 +3558,15 @@ double player_t::composite_parry() const
   return total_parry;
 }
 
-double player_t::composite_block_reduction( action_state_t* s ) const
+double player_t::composite_block_reduction( action_state_t* ) const
 {
   double b = current.block_reduction;
 
-  // Players have base block reduction = 0, enemies have a fixed 0.30 damage reduction on block
+  // Players have a base block reduction = 0, enemies have a fixed 0.30 damage reduction on block
   if ( b == 0 )
   {
     // The block reduction rating is equal to 2.5 times the equipped shield's armor rating
-    double block_reduction_rating = items[ SLOT_OFF_HAND ].stats.armor * 2.5;
-
-    b += block_reduction_rating / ( block_reduction_rating + s -> action -> player -> current.armor_coeff );
-
-    if ( meta_gem == META_ETERNAL_SHADOWSPIRIT || meta_gem == META_ETERNAL_PRIMAL )
-    {
-      b += 0.01;
-    }
+    return items[ SLOT_OFF_HAND ].stats.armor * 2.5;
   }
 
   return b;
@@ -3221,13 +3593,16 @@ double player_t::composite_spell_haste() const
 
   h = 1.0 / ( 1.0 + h );
 
-  if ( !is_pet() && !is_enemy() )
+  if ( !is_pet() && !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.bloodlust->check() )
       h *= 1.0 / ( 1.0 + buffs.bloodlust->data().effectN( 1 ).percent() );
 
     if ( buffs.berserking->check() )
       h *= 1.0 / ( 1.0 + buffs.berserking->data().effectN( 1 ).percent() );
+
+    if ( buffs.guardian_of_azeroth->check() )
+      h *= 1.0 / ( 1.0 + buffs.guardian_of_azeroth->check_stack_value() );
 
     h *= 1.0 / ( 1.0 + racials.nimble_fingers->effectN( 1 ).percent() );
     h *= 1.0 / ( 1.0 + racials.time_is_money->effectN( 1 ).percent() );
@@ -3246,7 +3621,7 @@ double player_t::composite_spell_speed() const
 {
   auto speed = cache.spell_haste();
 
-  if ( !is_pet() && !is_enemy() )
+  if ( !is_pet() && !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.tempus_repit->check() )
     {
@@ -3291,11 +3666,19 @@ double player_t::composite_spell_crit_chance() const
     sc += ( cache.intellect() / current.spell_crit_per_intellect / 100.0 );
   }
 
+  // reckless force (The Unbound Force) crit bonus from 20 stack proc
+  if (buffs.reckless_force)
+    sc += buffs.reckless_force->check_value();
+
   sc += racials.viciousness->effectN( 1 ).percent();
   sc += racials.arcane_acuity->effectN( 1 ).percent();
+  if(buffs.embrace_of_paku)
+    sc += buffs.embrace_of_paku->check_value();
 
   if ( timeofday == DAY_TIME )
+  {
     sc += racials.touch_of_elune->effectN( 1 ).percent();
+  }
 
   return sc;
 }
@@ -3313,7 +3696,7 @@ double player_t::composite_spell_hit() const
 
 double player_t::composite_mastery() const
 {
-  return util::round( current.mastery + composite_mastery_rating() / current.rating.mastery, 2 );
+  return current.mastery + composite_mastery_rating() / current.rating.mastery;
 }
 
 double player_t::composite_bonus_armor() const
@@ -3325,7 +3708,7 @@ double player_t::composite_damage_versatility() const
 {
   double cdv = composite_damage_versatility_rating() / current.rating.damage_versatility;
 
-  if ( !is_pet() && !is_enemy() )
+  if ( !is_pet() && !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.legendary_tank_buff )
       cdv += buffs.legendary_tank_buff->check_value();
@@ -3337,6 +3720,7 @@ double player_t::composite_damage_versatility() const
   }
 
   cdv += racials.mountaineer->effectN( 1 ).percent();
+  cdv += racials.brush_it_off->effectN( 1 ).percent();
 
   return cdv;
 }
@@ -3345,7 +3729,7 @@ double player_t::composite_heal_versatility() const
 {
   double chv = composite_heal_versatility_rating() / current.rating.heal_versatility;
 
-  if ( !is_pet() && !is_enemy() )
+  if ( !is_pet() && !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.legendary_tank_buff )
       chv += buffs.legendary_tank_buff->check_value();
@@ -3357,6 +3741,7 @@ double player_t::composite_heal_versatility() const
   }
 
   chv += racials.mountaineer->effectN( 1 ).percent();
+  chv += racials.brush_it_off->effectN( 1 ).percent();
 
   return chv;
 }
@@ -3365,7 +3750,7 @@ double player_t::composite_mitigation_versatility() const
 {
   double cmv = composite_mitigation_versatility_rating() / current.rating.mitigation_versatility;
 
-  if ( !is_pet() && !is_enemy() )
+  if ( !is_pet() && !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.legendary_tank_buff )
       cmv += buffs.legendary_tank_buff->check_value() / 2;
@@ -3377,6 +3762,7 @@ double player_t::composite_mitigation_versatility() const
   }
 
   cmv += racials.mountaineer->effectN( 1 ).percent() / 2;
+  cmv += racials.brush_it_off->effectN( 1 ).percent() / 2;
 
   return cmv;
 }
@@ -3462,6 +3848,17 @@ double player_t::composite_player_target_multiplier( player_t* target, school_e 
     m *= 1.0 + buffs.demon_damage_buff->data().effectN( 2 ).percent();
   }
 
+  if ( target->race == RACE_ABERRATION && buffs.damage_to_aberrations && buffs.damage_to_aberrations->check() )
+  {
+    m *= 1.0 + buffs.damage_to_aberrations->stack_value();
+  }
+
+  auto td = get_target_data( target );
+  if ( td )
+  {
+    m *= 1.0 + td->debuff.condensed_lifeforce->check_value();
+  }
+
   return m;
 }
 
@@ -3490,7 +3887,16 @@ double player_t::composite_player_critical_damage_multiplier( const action_state
   {
     m *= 1.0 + buffs.incensed->check_value();
   }
-
+  // Critical hit damage buff from R3 Blood of the Enemy major on-use
+  if ( buffs.seething_rage )
+  {
+    m *= 1.0 + buffs.seething_rage->check_value();
+  }
+  // Critical hit damage buff from follower themed Benthic boots
+  if ( buffs.fathom_hunter )
+  {
+    m *= 1.0 + buffs.fathom_hunter->check_value();
+  }
   return m;
 }
 
@@ -3516,13 +3922,13 @@ double player_t::temporary_movement_modifier() const
 {
   double temporary = 0;
 
-  if ( !is_enemy() )
+  if ( !is_enemy() && type != HEALING_ENEMY )
   {
     if ( buffs.stampeding_roar->check() )
       temporary = std::max( buffs.stampeding_roar->data().effectN( 1 ).percent(), temporary );
   }
 
-  if ( !is_enemy() && !is_pet() )
+  if ( !is_enemy() && !is_pet() && type != HEALING_ENEMY )
   {
     if ( buffs.darkflight->check() )
       temporary = std::max( buffs.darkflight->data().effectN( 1 ).percent(), temporary );
@@ -3557,6 +3963,10 @@ double player_t::passive_movement_modifier() const
 {
   double passive = passive_modifier;
 
+  if ( race == RACE_ZANDALARI_TROLL && zandalari_loa == GONK )
+  {
+    passive += find_spell( 292362 )->effectN( 1 ).percent();
+  }
   passive += racials.quickness->effectN( 2 ).percent();
   if ( buffs.aggramars_stride )
   {
@@ -3598,7 +4008,7 @@ double player_t::composite_attribute_multiplier( attribute_e attr ) const
 {
   double m = current.attribute_multiplier[ attr ];
 
-  if ( is_pet() || is_enemy() )
+  if ( is_pet() || is_enemy() || type == HEALING_ENEMY )
     return m;
 
   if ( ( true_level >= 50 ) && matching_gear )
@@ -3786,8 +4196,7 @@ void player_t::invalidate_cache( cache_e c )
   if ( !cache.active )
     return;
 
-  if ( sim->debug )
-    sim->out_debug.printf( "%s invalidates %s", name(), util::cache_type_string( c ) );
+  sim->print_debug( "{} invalidates stat cache for {}.", *this, util::cache_type_string( c ) );
 
   // Special linked invalidations
   switch ( c )
@@ -3815,12 +4224,20 @@ void player_t::invalidate_cache( cache_e c )
       break;
     case CACHE_ATTACK_HASTE:
       invalidate_cache( CACHE_ATTACK_SPEED );
+      invalidate_cache( CACHE_RPPM_HASTE );
       break;
     case CACHE_SPELL_HASTE:
       invalidate_cache( CACHE_SPELL_SPEED );
+      invalidate_cache( CACHE_RPPM_HASTE );
       break;
     case CACHE_BONUS_ARMOR:
       invalidate_cache( CACHE_ARMOR );
+      break;
+    case CACHE_ATTACK_CRIT_CHANCE:
+      invalidate_cache( CACHE_RPPM_CRIT );
+      break;
+    case CACHE_SPELL_CRIT_CHANCE:
+      invalidate_cache( CACHE_RPPM_CRIT );
       break;
     default:
       break;
@@ -3844,10 +4261,6 @@ void player_t::invalidate_cache( cache_e c )
     case CACHE_HASTE:
       invalidate_cache( CACHE_ATTACK_HASTE );
       invalidate_cache( CACHE_SPELL_HASTE );
-      break;
-    case CACHE_SPEED:
-      invalidate_cache( CACHE_ATTACK_SPEED );
-      invalidate_cache( CACHE_SPELL_SPEED );
       break;
     case CACHE_VERSATILITY:
       invalidate_cache( CACHE_DAMAGE_VERSATILITY );
@@ -3917,8 +4330,7 @@ void player_t::sequence_add( const action_t* a, const player_t* target, const ti
 
 void player_t::combat_begin()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Combat begins for player %s", name() );
+  sim->print_debug( "Combat begins for {}.", *this );
 
   if ( !is_pet() && !is_add() )
   {
@@ -3938,21 +4350,29 @@ void player_t::combat_begin()
         {
           if ( first_cast )
           {
+            if ( !is_enemy() )
+            {
+              sequence_add( action, action->target, sim->current_time() );
+            }
             action->execute();
-            sequence_add( action, action->target, sim->current_time() );
             first_cast = false;
           }
-          else if ( sim->debug )
+          else
           {
-            sim->out_debug.printf( "Player %s attempting to cast multiple harmful spells precombat.", name() );
+            sim->print_debug( "{} attempting to cast multiple harmful spells during pre-combat.", *this );
           }
         }
         else
         {
+          if ( !is_enemy() )
+          {
+            sequence_add( action, action->target, sim->current_time() );
+          }
           action->execute();
-          sequence_add( action, action->target, sim->current_time() );
         }
       }
+      if ( in_combat && ( action->channeled || action->travel_time() == timespan_t::zero() ) )
+        break;
     }
   }
   first_cast = false;
@@ -3968,6 +4388,11 @@ void player_t::combat_begin()
   // forcing a resource timeline data collection in combat_end() seems to have rendered this next line unnecessary
   collected_data.health_changes.previous_loss_level     = 0.0;
   collected_data.health_changes_tmi.previous_gain_level = 0.0;
+
+  for ( size_t i = 0, end = collected_data.combat_start_resource.size(); i < end; ++i )
+  {
+    collected_data.combat_start_resource[ i ].add( resources.current[ i ] );
+  }
 
   if ( buffs.cooldown_reduction )
     buffs.cooldown_reduction->trigger();
@@ -3991,15 +4416,18 @@ void player_t::combat_begin()
   }
 
   // Trigger registered combat-begin functions
-  range::for_each( combat_begin_functions, [ this ]( const combat_begin_fn_t& fn ) {
-    fn( this );
-  } );
+  for ( const auto& f : combat_begin_functions)
+  {
+    f( this );
+  }
 }
 
 void player_t::combat_end()
 {
   for ( size_t i = 0; i < pet_list.size(); ++i )
+  {
     pet_list[ i ]->combat_end();
+  }
 
   if ( !is_pet() )
   {
@@ -4008,9 +4436,8 @@ void player_t::combat_end()
   else
     cast_pet()->dismiss();
 
-  if ( sim->debug )
-    sim->out_debug.printf( "Combat ends for player %s at time %.4f fight_length=%.4f", name(),
-                           sim->current_time().total_seconds(), iteration_fight_length.total_seconds() );
+  sim->print_debug( "Combat ends for {} at time {} fight_length={}", *this,
+                           sim->current_time(), iteration_fight_length );
 
   // Defer parent actor find to combat end, and ensure it is only performed if the parent sim is
   // initialized. This will avoid a data race in case the main thread for some reason is in init
@@ -4050,8 +4477,7 @@ void player_t::datacollection_begin()
   if ( !active_during_iteration )
     return;
 
-  if ( sim->debug )
-    sim->out_debug.print( "Data collection begins for player {} (id={})", name(), index );
+  sim->print_debug( "Data collection begins for {} (id={})", *this, index );
 
   iteration_fight_length                = timespan_t::zero();
   iteration_waiting_time                = timespan_t::zero();
@@ -4114,14 +4540,15 @@ void player_t::datacollection_end()
     spawner->datacollection_end();
   } );
 
-  if ( sim->debug )
-    sim->out_debug.printf( "Data collection ends for player %s (id=%d) at time %.4f fight_length=%.4f", name(), index,
-                           sim->current_time().total_seconds(), iteration_fight_length.total_seconds() );
+  sim->print_debug( "Data collection ends for {} (id={}) at time {} fight_length={}", *this, index,
+                           sim->current_time(), iteration_fight_length );
 
-  for ( size_t i = 0; i < stats_list.size(); ++i )
-    stats_list[ i ]->datacollection_end();
+  for ( auto& stats : stats_list )
+  {
+    stats->datacollection_end();
+  }
 
-  if ( !is_enemy() && !is_add() )
+  if ( !is_enemy() && !is_add() && type != HEALING_ENEMY )
   {
     sim->iteration_dmg += iteration_dmg;
     sim->priority_iteration_dmg += priority_iteration_dmg;
@@ -4130,7 +4557,7 @@ void player_t::datacollection_end()
   }
 
   // make sure TMI-relevant timeline lengths all match for tanks
-  if ( !is_enemy() && !is_pet() && primary_role() == ROLE_TANK )
+  if ( !is_enemy() && !is_pet() && type != HEALING_ENEMY && primary_role() == ROLE_TANK )
   {
     collected_data.timeline_healing_taken.add( sim->current_time(), 0.0 );
     collected_data.timeline_dmg_taken.add( sim->current_time(), 0.0 );
@@ -4143,8 +4570,10 @@ void player_t::datacollection_end()
 
   range::for_each( buff_list, std::mem_fn( &buff_t::datacollection_end ) );
 
-  for ( size_t i = 0; i < uptime_list.size(); ++i )
-    uptime_list[ i ]->datacollection_end( iteration_fight_length );
+  for ( auto& uptime : uptime_list )
+  {
+    uptime->datacollection_end( iteration_fight_length );
+  }
 
   range::for_each( benefit_list, std::mem_fn( &benefit_t::datacollection_end ) );
   range::for_each( proc_list, std::mem_fn( &proc_t::datacollection_end ) );
@@ -4182,13 +4611,6 @@ bool compare( const buff_t* a, const buff_t* b )
   return a->source->index < b->source->index;
 }
 
-#ifndef NDEBUG
-const char* source_name( const buff_t& b )
-{
-  return b.source ? b.source->name() : "(none)";
-}
-#endif
-
 // Sort buff_list and check for uniqueness
 void prepare( player_t& p )
 {
@@ -4205,8 +4627,8 @@ void prepare( player_t& p )
     // ! ( [ i ] < [ i + 1 ] ), then [ i ] == [ i + 1 ].
     if ( !compare( p.buff_list[ i ], p.buff_list[ i + 1 ] ) )
     {
-      p.sim->errorf( "Player %s has duplicate buffs named '%s' with source '%s' - the end is near.", p.name(),
-                     p.buff_list[ i ]->name(), source_name( *p.buff_list[ i ] ) );
+      p.sim->error( "{} has duplicate buffs named '{}' with source '{}' - the end is near.", p,
+                     p.buff_list[ i ]->name(), p.buff_list[ i ]->source_name() );
     }
   }
 #endif
@@ -4220,7 +4642,7 @@ void report_unmatched( const buff_t& b )
    */
   if ( !b.source || b.source == b.player )
   {
-    b.sim->errorf( "Player '%s' can't merge buff %s with source '%s'", b.player->name(), b.name(), source_name( b ) );
+    b.sim->error( "{} can't merge buff '{}' with source '{}'.", *b.player, b.name(), b.source_name() );
   }
 #else
   // "Use" the parameters to silence compiler warnings.
@@ -4304,7 +4726,7 @@ void player_t::merge( player_t& other )
     else
     {
 #ifndef NDEBUG
-      sim->errorf( "%s player_t::merge can't merge proc %s", name(), proc.name() );
+      sim->error( "{} can't merge proc '{}'.", *this, proc.name() );
 #endif
     }
   }
@@ -4318,7 +4740,7 @@ void player_t::merge( player_t& other )
     else
     {
 #ifndef NDEBUG
-      sim->errorf( "%s player_t::merge can't merge gain %s", name(), gain.name() );
+      sim->error( "{} can't merge gain '{}'.", *this, gain.name() );
 #endif
     }
   }
@@ -4332,7 +4754,7 @@ void player_t::merge( player_t& other )
     else
     {
 #ifndef NDEBUG
-      sim->errorf( "%s player_t::merge can't merge stats %s", name(), stats.name() );
+      sim->error( "{} can't merge stats '{}'", *this, stats.name() );
 #endif
     }
   }
@@ -4346,7 +4768,7 @@ void player_t::merge( player_t& other )
     else
     {
 #ifndef NDEBUG
-      sim->errorf( "%s player_t::merge can't merge uptime %s", name(), uptime.name() );
+      sim->error( "{} can't merge uptime '{}'.", *this, uptime.name() );
 #endif
     }
   }
@@ -4360,7 +4782,7 @@ void player_t::merge( player_t& other )
     else
     {
 #ifndef NDEBUG
-      sim->errorf( "%s player_t::merge can't merge benefit %s", name(), benefit.name() );
+      sim->error( "{} can't merge benefit '{}'.", *this, benefit.name() );
 #endif
     }
   }
@@ -4374,7 +4796,7 @@ void player_t::merge( player_t& other )
     else
     {
 #ifndef NDEBUG
-      sim->errorf( "%s player_t::merge can't merge proc %s", name(), sd.name_str.c_str() );
+      sim->error("{} can't merge proc '{}'.", *this, sd.name_str );
 #endif
     }
   }
@@ -4383,7 +4805,7 @@ void player_t::merge( player_t& other )
   size_t n_entries = std::min( action_list.size(), other.action_list.size() );
   if ( action_list.size() != other.action_list.size() )
   {
-    sim->errorf( "%s player_t::merge action lists for actor differ (other=%s, size=%u, other.size=%u)!", name(),
+    sim->error( "{} can't merge action lists: size differs (other={}, size={}, other.size={})!", *this,
                  other.name(), action_list.size(), other.action_list.size() );
   }
 
@@ -4395,12 +4817,12 @@ void player_t::merge( player_t& other )
     }
     else
     {
-      sim->errorf(
-          "%s player_t::merge can't merge action %s::%s with %s::%s", name(),
+      sim->error(
+          "{} can't merge action {}::{} with {}::{} because ids do not match.", *this,
           action_list[ i ]->action_list ? action_list[ i ]->action_list->name_str.c_str() : "(none)",
-          action_list[ i ]->signature_str.c_str(),
+          action_list[ i ]->signature_str,
           other.action_list[ i ]->action_list ? other.action_list[ i ]->action_list->name_str.c_str() : "(none)",
-          other.action_list[ i ]->signature_str.c_str() );
+          other.action_list[ i ]->signature_str );
     }
   }
 }
@@ -4410,12 +4832,12 @@ void player_t::merge( player_t& other )
  */
 void player_t::reset()
 {
-  if ( sim->debug )
-    sim->out_debug.printf( "Resetting player %s", name() );
+  sim->print_debug( "Resetting {}.", *this );
 
   last_cast = timespan_t::zero();
   gcd_ready = timespan_t::zero();
   off_gcd_ready = timespan_t::min();
+  cast_while_casting_ready = timespan_t::min();
 
   cache.invalidate_all();
 
@@ -4429,10 +4851,7 @@ void player_t::reset()
   // Restore default target
   target = default_target;
 
-  if ( sim->debug )
-  {
-    sim->out_debug.printf( "%s current stats ( reset to initial ): %s", name(), current.to_string().c_str() );
-  }
+  sim->print_debug( "{} resets current stats ( reset to initial ): {}", *this, current.to_string() );
 
   for ( auto& buff : buff_list )
     buff->reset();
@@ -4447,13 +4866,16 @@ void player_t::reset()
   queueing        = nullptr;
   channeling      = nullptr;
   readying        = nullptr;
-  strict_sequence = 0;
-  off_gcd         = 0;
+  strict_sequence = nullptr;
+  off_gcd         = nullptr;
+  cast_while_casting_poll_event = nullptr;
   in_combat       = false;
+
+  current_execute_type = execute_type::FOREGROUND;
 
   current_attack_speed    = 1.0;
   gcd_current_haste_value = 1.0;
-  gcd_haste_type          = HASTE_NONE;
+  gcd_type          = gcd_haste_type::NONE;
 
   cast_delay_reaction = timespan_t::zero();
   cast_delay_occurred = timespan_t::zero();
@@ -4498,13 +4920,13 @@ void player_t::reset()
 
   range::for_each( spawners, []( spawner::base_actor_spawner_t* obj ) { obj->reset(); } );
 
-  potion_used = 0;
+  potion_used = false;
 
   item_cooldown.reset( false );
 
   incoming_damage.clear();
 
-  resource_threshold_trigger = 0;
+  resource_threshold_trigger = nullptr;
 
   for ( auto& elem : variables )
     elem->reset();
@@ -4524,6 +4946,11 @@ void player_t::reset()
   if ( active_off_gcd_list && active_off_gcd_list != default_action_list )
   {
     active_off_gcd_list = default_action_list;
+  }
+
+  if ( active_cast_while_casting_list && active_cast_while_casting_list != default_action_list )
+  {
+    active_cast_while_casting_list = default_action_list;
   }
 
   reset_resource_callbacks();
@@ -4550,14 +4977,118 @@ void player_t::trigger_ready()
   if ( buffs.stunned->check() )
     return;
 
-  if ( sim->debug )
-    sim->out_debug.printf( "%s is triggering ready, interval=%f", name(),
-                           ( sim->current_time() - started_waiting ).total_seconds() );
+  sim->print_debug( "{} is triggering ready, interval={}", *this,
+                           ( sim->current_time() - started_waiting ) );
 
   iteration_waiting_time += sim->current_time() - started_waiting;
   started_waiting = timespan_t::min();
 
   schedule_ready( available() );
+}
+
+void player_t::schedule_off_gcd_ready( timespan_t delta_time )
+{
+  if ( active_off_gcd_list == nullptr )
+  {
+    return;
+  }
+
+  if ( current_execute_type != execute_type::OFF_GCD )
+  {
+    return;
+  }
+
+  // Already polling, do nothing
+  if ( off_gcd )
+  {
+    return;
+  }
+
+  // Casting or channeling something
+  if ( executing || channeling )
+  {
+    return;
+  }
+
+  if ( !readying )
+  {
+    return;
+  }
+
+  // No time left to perform a poll event before GCD elapses
+  if ( sim->current_time() + delta_time >= readying->occurs() )
+  {
+    return;
+  }
+
+  // No off-gcd cooldown will be ready during this GCD interval
+  if ( off_gcd_ready >= readying->occurs() )
+  {
+    return;
+  }
+
+  assert( cast_while_casting_poll_event == nullptr );
+
+  off_gcd = make_event<player_gcd_event_t>( *sim, *this, delta_time );
+}
+
+void player_t::schedule_cwc_ready( timespan_t delta_time )
+{
+  if ( active_cast_while_casting_list == nullptr )
+  {
+    return;
+  }
+
+  if ( current_execute_type != execute_type::CAST_WHILE_CASTING )
+  {
+    return;
+  }
+
+  // Already polling, do nothing
+  if ( cast_while_casting_poll_event )
+  {
+    return;
+  }
+
+  // Not casting, or channeling anything, nor trying to find something to do
+  if ( ( !executing || !executing->execute_event ) && !channeling && !readying )
+  {
+    return;
+  }
+
+  // Figure out a safe threshold where the poller should not trigger any more, based on the next
+  // ready event (actor finding something to do), when the channel ends, or when the current cast
+  // ends.
+  timespan_t threshold;
+  if ( readying )
+  {
+    threshold = readying->occurs();
+  }
+  else if ( channeling )
+  {
+    threshold = channeling->get_dot()->end_event->occurs();
+    threshold += sim->channel_lag + 4 * sim->channel_lag_stddev;
+  }
+  else
+  {
+    threshold = executing->execute_event->occurs();
+  }
+
+  // No cast while casting ability cd ready before the threshold finishes
+  if ( cast_while_casting_ready >= threshold )
+  {
+    return;
+  }
+
+  // No time left to perform a poll event before the threshold finishes
+  if ( sim->current_time() + delta_time >= threshold )
+  {
+    return;
+  }
+
+  assert( off_gcd == nullptr );
+
+  cast_while_casting_poll_event = make_event<player_cwc_event_t>( *sim, *this, delta_time );
 }
 
 /**
@@ -4567,17 +5098,14 @@ void player_t::schedule_ready( timespan_t delta_time, bool waiting )
 {
   if ( readying )
   {
-    std::runtime_error(fmt::format("Player '{}' scheduled ready while already ready.", name() ));
+    throw std::runtime_error(fmt::format("{} scheduled ready while already ready.", *this ));
   }
   action_t* was_executing = ( channeling ? channeling : executing );
 
   if ( queueing )
   {
-    if ( sim->debug )
-    {
-      sim->out_debug.printf( "%s canceling queued action %s at %.3f", name(), queueing->name(),
-                             queueing->queue_event->occurs().total_seconds() );
-    }
+    sim->print_debug( "{} canceling queued action '{}' at {}", *this, queueing->name(),
+                             queueing->queue_event->occurs() );
     event_t::cancel( queueing->queue_event );
     queueing = nullptr;
   }
@@ -4598,7 +5126,10 @@ void player_t::schedule_ready( timespan_t delta_time, bool waiting )
 
   if ( waiting )
   {
-    sequence_add_wait( delta_time, sim->current_time() );
+    if ( !is_enemy() )
+    {
+      sequence_add_wait( delta_time, sim->current_time() );
+    }
     iteration_waiting_time += delta_time;
   }
   else
@@ -4623,13 +5154,13 @@ void player_t::schedule_ready( timespan_t delta_time, bool waiting )
           action_queued = true;
         }
       }
-      else if ( last_foreground_action->gcd() == timespan_t::zero() )
-      {
-        lag = timespan_t::zero();
-      }
       else if ( last_foreground_action->channeled && !last_foreground_action->interrupt_immediate_occurred )
       {
         lag = rng().gauss( sim->channel_lag, sim->channel_lag_stddev );
+      }
+      else if ( last_foreground_action->gcd() == timespan_t::zero() )
+      {
+        lag = timespan_t::zero();
       }
       else
       {
@@ -4680,12 +5211,10 @@ void player_t::schedule_ready( timespan_t delta_time, bool waiting )
     {
       cast_delay_reaction = timespan_t::zero();
     }
-    if ( sim->debug )
-    {
-      sim->out_debug.printf( "%s %s schedule_ready(): cast_finishes=%f cast_delay=%f", name_str.c_str(),
-                             was_executing->name_str.c_str(), readying->occurs().total_seconds(),
-                             cast_delay_reaction.total_seconds() );
-    }
+
+    sim->print_debug( "{} {} schedule_ready(): cast_finishes={} cast_delay={}", *this,
+                             was_executing->name_str, readying->occurs(),
+                             cast_delay_reaction );
   }
 }
 
@@ -4694,8 +5223,7 @@ void player_t::schedule_ready( timespan_t delta_time, bool waiting )
  */
 void player_t::arise()
 {
-  if ( sim->log )
-    sim->out_log.printf( "%s tries to arise.", name() );
+  sim->print_log( "{} tries to arise.", *this );
 
   if ( !initial.sleeping )
     current.sleeping = false;
@@ -4705,15 +5233,15 @@ void player_t::arise()
 
   actor_spawn_index = sim->global_spawn_index++;
 
-  if ( sim->log )
-    sim->out_log.printf( "%s arises. Spawn Index=%d", name(), actor_spawn_index );
+  sim->print_log( "{} arises. Spawn Index={}", *this, actor_spawn_index );
 
   init_resources( true );
 
   cache.invalidate_all();
 
-  readying = 0;
-  off_gcd  = 0;
+  readying = nullptr;
+  off_gcd  = nullptr;
+  cast_while_casting_poll_event = nullptr;
 
   arise_time = sim->current_time();
   last_regen = sim->current_time();
@@ -4724,7 +5252,7 @@ void player_t::arise()
     sim->target_non_sleeping_list.push_back( this );
 
     // When an enemy arises, trigger players to potentially acquire a new target
-    range::for_each( sim->player_non_sleeping_list, [this]( player_t* p ) { p->acquire_target( ACTOR_ARISE, this ); } );
+    range::for_each( sim->player_non_sleeping_list, [this]( player_t* p ) { p->acquire_target( retarget_source::ACTOR_ARISE, this ); } );
 
     if ( sim->overrides.chaos_brand && debuffs.chaos_brand )
       debuffs.chaos_brand->override_buff();
@@ -4743,7 +5271,7 @@ void player_t::arise()
     // Find a target to shoot on. This is to ensure that transient friendly allies (such as dynamic
     // pets) can cope with a situation, where the primary target for example is invulnerable, so
     // they need to figure out a (more valid) target to shoot spells on.
-    acquire_target( SELF_ARISE );
+    acquire_target( retarget_source::SELF_ARISE );
   }
 
   if ( has_foreground_actions( *this ) )
@@ -4799,13 +5327,9 @@ void player_t::demise()
   arise_time               = timespan_t::min();
   current.distance_to_move = 0;
 
-  if ( readying )
-  {
-    event_t::cancel( readying );
-    readying = 0;
-  }
-
+  event_t::cancel( readying );
   event_t::cancel( off_gcd );
+  event_t::cancel( cast_while_casting_poll_event );
 
   range::for_each( callbacks_on_demise, [this]( const std::function<void( player_t* )>& fn ) { fn( this ); } );
 
@@ -4837,7 +5361,7 @@ void player_t::demise()
 
     // When an enemy dies, trigger players to acquire a new target
     range::for_each( sim->player_non_sleeping_list,
-                     [this]( player_t* p ) { p->acquire_target( ACTOR_DEMISE, this ); } );
+                     [this]( player_t* p ) { p->acquire_target( retarget_source::ACTOR_DEMISE, this ); } );
   }
   else
   {
@@ -4853,37 +5377,41 @@ void player_t::interrupt()
 {
   // FIXME! Players will need to override this to handle background repeating actions.
 
-  if ( buffs.norgannons_foresight_ready )
+  if ( sim->log )
+    sim->out_log.printf( "%s is interrupted", name() );
+
+  if ( executing )
+    executing->interrupt_action();
+  if ( queueing )
+    queueing->interrupt_action();
+  if ( channeling )
+    channeling->interrupt_action();
+
+  event_t::cancel( cast_while_casting_poll_event );
+
+  if ( strict_sequence )
   {
-    if ( !buffs.norgannons_foresight_ready->check() || buffs.stunned->check() )
+    strict_sequence->cancel();
+    strict_sequence = nullptr;
+  }
+  if ( buffs.stunned->check() )
+  {
+    if ( readying )
+      event_t::cancel( readying );
+    if ( off_gcd )
+      event_t::cancel( off_gcd );
+
+    current_execute_type = execute_type::FOREGROUND;
+  }
+  else
+  {
+    if ( !readying && !current.sleeping )
+      schedule_ready();
+
+    if ( current_execute_type == execute_type::CAST_WHILE_CASTING )
     {
-      if ( sim->log )
-        sim->out_log.printf( "%s is interrupted", name() );
-
-      if ( executing )
-        executing->interrupt_action();
-      if ( queueing )
-        queueing->interrupt_action();
-      if ( channeling )
-        channeling->interrupt_action();
-
-      if ( strict_sequence )
-      {
-        strict_sequence->cancel();
-        strict_sequence = 0;
-      }
-      if ( buffs.stunned->check() )
-      {
-        if ( readying )
-          event_t::cancel( readying );
-        if ( off_gcd )
-          event_t::cancel( off_gcd );
-      }
-      else
-      {
-        if ( !readying && !current.sleeping )
-          schedule_ready();
-      }
+      current_execute_type = execute_type::OFF_GCD;
+      schedule_off_gcd_ready( timespan_t::zero() );
     }
   }
 }
@@ -4908,7 +5436,10 @@ void player_t::stun()
 
 void player_t::moving()
 {
-  halt();
+  if ( !buffs.norgannons_foresight_ready || !buffs.norgannons_foresight_ready->check() )
+  {
+    halt();
+  }
 }
 
 void player_t::finish_moving()
@@ -4943,18 +5474,17 @@ void player_t::clear_debuffs()
 
 action_t* player_t::execute_action()
 {
-  readying = 0;
-  off_gcd  = 0;
+  assert( !readying );
 
-  action_t* action = 0;
+  action_t* action = nullptr;
 
-  if ( regen_type == REGEN_DYNAMIC )
+  if (resource_regeneration == regen_type::DYNAMIC)
     do_dynamic_regen();
 
   if ( !strict_sequence )
   {
     visited_apls_ = 0;  // Reset visited apl list
-    action        = select_action( *active_action_list );
+    action = select_action( *active_action_list, execute_type::FOREGROUND );
   }
   // Committed to a strict sequence of actions, just perform them instead of a priority list
   else
@@ -4962,16 +5492,16 @@ action_t* player_t::execute_action()
 
   last_foreground_action = action;
 
-  if ( restore_action_list != 0 )
+  if ( restore_action_list != nullptr )
   {
     activate_action_list( restore_action_list );
-    restore_action_list = 0;
+    restore_action_list = nullptr;
   }
 
   if ( action )
   {
     action->line_cooldown.start();
-    action->queue_execute( false );
+    action->queue_execute( execute_type::FOREGROUND );
     if ( !action->quiet )
     {
       iteration_executed_foreground_actions++;
@@ -4983,7 +5513,10 @@ action_t* player_t::execute_action()
       else
         off_gcdactions.push_back( action );
 
-      sequence_add( action, action->target, sim->current_time() );
+      if ( !is_enemy() )
+      {
+        sequence_add( action, action->target, sim->current_time() );
+      }
     }
   }
 
@@ -4992,7 +5525,7 @@ action_t* player_t::execute_action()
 
 void player_t::regen( timespan_t periodicity )
 {
-  if ( regen_type == REGEN_DYNAMIC && sim->debug )
+  if (resource_regeneration == regen_type::DYNAMIC&& sim->debug )
     sim->out_debug.printf( "%s dynamic regen, last=%.3f interval=%.3f", name(), last_regen.total_seconds(),
                            periodicity.total_seconds() );
 
@@ -5050,12 +5583,13 @@ double player_t::resource_loss( resource_e resource_type, double amount, gain_t*
   if ( current.sleeping )
     return 0.0;
 
-  if ( resource_type == primary_resource() )
+  if ( resource_type && resource_type == primary_resource() )
     uptimes.primary_resource_cap->update( false, sim->current_time() );
 
   double actual_amount;
   double previous_amount;
   double previous_pct_points;
+  bool has_active_resource_callbacks = this -> has_active_resource_callbacks;
   if (has_active_resource_callbacks)
   {
     previous_amount = resources.current[ resource_type ];
@@ -5112,7 +5646,8 @@ double player_t::resource_gain( resource_e resource_type, double amount, gain_t*
     iteration_resource_gained[ resource_type ] += actual_amount;
   }
 
-  if ( resource_type == primary_resource() && resources.max[ resource_type ] <= resources.current[ resource_type ] )
+  if ( resource_type && resource_type == primary_resource() &&
+       resources.max[ resource_type ] <= resources.current[ resource_type ] )
     uptimes.primary_resource_cap->update( true, sim->current_time() );
 
   if ( source )
@@ -5185,7 +5720,7 @@ role_e player_t::primary_role() const
 
 const char* player_t::primary_tree_name() const
 {
-  return dbc::specialization_string( specialization() ).c_str();
+  return dbc::specialization_string( specialization() );
 }
 
 /**
@@ -5266,7 +5801,7 @@ void player_t::stat_gain( stat_e stat, double amount, gain_t* gain, action_t* ac
   int temp_value = temporary_stat ? 1 : 0;
 
   cache_e cache_type = cache_from_stat( stat );
-  if ( regen_type == REGEN_DYNAMIC && regen_caches[ cache_type ] )
+  if (resource_regeneration == regen_type::DYNAMIC&& regen_caches[ cache_type ] )
     do_dynamic_regen();
 
   if ( sim->log )
@@ -5305,10 +5840,8 @@ void player_t::stat_gain( stat_e stat, double amount, gain_t* gain, action_t* ac
       invalidate_cache( cache_type );
 
       adjust_dynamic_cooldowns();
-      // adjust_global_cooldown( HASTE_ANY );
-      adjust_auto_attack( HASTE_ANY );
-      // Queued execute must be adjusted after dynamid cooldowns / global cooldown
-      adjust_action_queue_time();
+      // adjust_global_cooldown( gcd_type::HASTE_ANY );
+      adjust_auto_attack(gcd_haste_type::HASTE );
       break;
     }
 
@@ -5389,6 +5922,11 @@ void player_t::stat_gain( stat_e stat, double amount, gain_t* gain, action_t* ac
     default:
       break;
   }
+
+  if ( sim->debug )
+  {
+    sim->out_debug.print( "{} stats: {}", name(), current.stats.to_string() );
+  }
 }
 
 void player_t::stat_loss( stat_e stat, double amount, gain_t* gain, action_t* action, bool temporary_buff )
@@ -5401,7 +5939,7 @@ void player_t::stat_loss( stat_e stat, double amount, gain_t* gain, action_t* ac
     return;
 
   cache_e cache_type = cache_from_stat( stat );
-  if ( regen_type == REGEN_DYNAMIC && regen_caches[ cache_type ] )
+  if (resource_regeneration == regen_type::DYNAMIC&& regen_caches[ cache_type ] )
     do_dynamic_regen();
 
   if ( sim->log )
@@ -5494,10 +6032,8 @@ void player_t::stat_loss( stat_e stat, double amount, gain_t* gain, action_t* ac
       invalidate_cache( cache_type );
 
       adjust_dynamic_cooldowns();
-      // adjust_global_cooldown( HASTE_ANY );
-      adjust_auto_attack( HASTE_ANY );
-      // Queued execute must be adjusted after dynamid cooldowns / global cooldown
-      adjust_action_queue_time();
+      // adjust_global_cooldown( gcd_type::HASTE_ANY );
+      adjust_auto_attack(gcd_haste_type::HASTE );
       break;
     }
 
@@ -5524,6 +6060,11 @@ void player_t::stat_loss( stat_e stat, double amount, gain_t* gain, action_t* ac
     }
     default:
       break;
+  }
+
+  if ( sim->debug )
+  {
+    sim->out_debug.print( "{} stats: {}", name(), current.stats.to_string() );
   }
 }
 
@@ -5883,7 +6424,7 @@ bool try_guardian_spirit( player_t& p, double actual_amount )
     // stats_t* stat = buffs.guardian_spirit -> source ? buffs.guardian_spirit -> source -> get_stats( "guardian_spirit"
     // ) : 0; double gs_amount = resources.max[ RESOURCE_HEALTH ] * buffs.guardian_spirit -> data().effectN( 2
     // ).percent(); resource_gain( RESOURCE_HEALTH, s -> result_amount ); if ( stat ) stat -> add_result( gs_amount,
-    // gs_amount, HEAL_DIRECT, RESULT_HIT );
+    // gs_amount, result_amount_type::HEAL_DIRECT, RESULT_HIT );
     p.buffs.guardian_spirit->expire();
     return true;
   }
@@ -5895,7 +6436,7 @@ bool try_guardian_spirit( player_t& p, double actual_amount )
 
 }
 
-void player_t::assess_damage( school_e school, dmg_e type, action_state_t* s )
+void player_t::assess_damage( school_e school, result_amount_type type, action_state_t* s )
 {
   using namespace assess_dmg_helper_functions;
 
@@ -5968,15 +6509,15 @@ void player_t::do_damage( action_state_t* incoming_state )
   }
 }
 
-void player_t::assess_damage_imminent_pre_absorb( school_e, dmg_e, action_state_t* )
+void player_t::assess_damage_imminent_pre_absorb( school_e, result_amount_type, action_state_t* )
 {
 }
 
-void player_t::assess_damage_imminent( school_e, dmg_e, action_state_t* )
+void player_t::assess_damage_imminent( school_e, result_amount_type, action_state_t* )
 {
 }
 
-void player_t::target_mitigation( school_e school, dmg_e dmg_type, action_state_t* s )
+void player_t::target_mitigation( school_e school, result_amount_type dmg_type, action_state_t* s )
 {
   if ( s->result_amount == 0 )
     return;
@@ -6004,7 +6545,7 @@ void player_t::target_mitigation( school_e school, dmg_e dmg_type, action_state_
     s->result_amount = 0;
   }
 
-  if ( school == SCHOOL_PHYSICAL && dmg_type == DMG_DIRECT )
+  if ( school == SCHOOL_PHYSICAL && dmg_type == result_amount_type::DMG_DIRECT )
   {
     if ( sim->debug && s->action && !s->target->is_enemy() && !s->target->is_add() )
       sim->out_debug.printf( "Damage to %s before armor mitigation is %f", s->target->name(), s->result_amount );
@@ -6016,9 +6557,9 @@ void player_t::target_mitigation( school_e school, dmg_e dmg_type, action_state_
     if ( s->action )
     {
       double armor  = s->target_armor;
-      double resist = armor / ( armor + s->action->player->current.armor_coeff );
+      double resist = armor / ( armor + s -> action -> player -> current.armor_coeff );
       resist        = clamp( resist, 0.0, armor_cap );
-      s->result_amount *= 1.0 - resist;
+      s -> result_amount *= 1.0 - resist;
     }
 
     if ( sim->debug && s->action && !s->target->is_enemy() && !s->target->is_add() )
@@ -6027,15 +6568,17 @@ void player_t::target_mitigation( school_e school, dmg_e dmg_type, action_state_
     double pre_block_amount = s->result_amount;
 
     // In BfA, Block and Crit Block work in the same manner as armor and are affected by the same cap
-    if ( s -> block_result == BLOCK_RESULT_BLOCKED || s -> block_result == BLOCK_RESULT_CRIT_BLOCKED )
+    if ( s ->action && (s -> block_result == BLOCK_RESULT_BLOCKED || s -> block_result == BLOCK_RESULT_CRIT_BLOCKED ))
     {
       double block_reduction = composite_block_reduction( s );
 
+      double block_resist = block_reduction / ( block_reduction + s -> action -> player -> current.armor_coeff );
+     
       if ( s -> block_result == BLOCK_RESULT_CRIT_BLOCKED )
-        block_reduction *= 2.0;
+        block_resist *= 2.0;
       
-      block_reduction = clamp( block_reduction, 0.0, armor_cap );
-      s -> result_amount *= 1.0 - block_reduction;
+      block_resist = clamp( block_resist, 0.0, armor_cap );
+      s -> result_amount *= 1.0 - block_resist;
 
       if ( s -> result_amount <= 0 )
         return;
@@ -6048,7 +6591,7 @@ void player_t::target_mitigation( school_e school, dmg_e dmg_type, action_state_
   }
 }
 
-void player_t::assess_heal( school_e, dmg_e, action_state_t* s )
+void player_t::assess_heal( school_e, result_amount_type, action_state_t* s )
 {
   // Increases to healing taken should modify result_total in order to correctly calculate overhealing
   // and other effects based on raw healing.
@@ -6056,7 +6599,7 @@ void player_t::assess_heal( school_e, dmg_e, action_state_t* s )
     s->result_total *= 1.0 + buffs.guardian_spirit->data().effectN( 1 ).percent();
 
   // process heal
-  s->result_amount = resource_gain( RESOURCE_HEALTH, s->result_total, 0, s->action );
+  s->result_amount = resource_gain( RESOURCE_HEALTH, s->result_total, nullptr, s->action );
 
   // if the target is a tank record this event on damage timeline
   if ( !is_pet() && primary_role() == ROLE_TANK )
@@ -6208,7 +6751,7 @@ action_t* player_t::find_action( const std::string& name ) const
   return find_vector_member( action_list, name );
 }
 
-cooldown_t* player_t::get_cooldown( const std::string& name )
+cooldown_t* player_t::get_cooldown( const std::string& name, action_t* a )
 {
   cooldown_t* c = find_cooldown( name );
 
@@ -6218,6 +6761,9 @@ cooldown_t* player_t::get_cooldown( const std::string& name )
 
     cooldown_list.push_back( c );
   }
+
+  if ( a )
+    c->action = a;
 
   return c;
 }
@@ -6351,7 +6897,7 @@ benefit_t* player_t::get_benefit( const std::string& name )
 
   if ( !u )
   {
-    u = new benefit_t( name );
+    u = new benefit_t( *sim, name );
 
     benefit_list.push_back( u );
   }
@@ -6365,7 +6911,7 @@ uptime_t* player_t::get_uptime( const std::string& name )
 
   if ( !u )
   {
-    u = new uptime_t( name );
+    u = new uptime_t( *sim, name );
 
     uptime_list.push_back( u );
   }
@@ -6435,8 +6981,8 @@ timespan_t wait_for_cooldown_t::execute_time() const
 snapshot_stats_t::snapshot_stats_t( player_t* player, const std::string& options_str ) :
   action_t( ACTION_OTHER, "snapshot_stats", player ),
   completed( false ),
-  proxy_spell( 0 ),
-  proxy_attack( 0 ),
+  proxy_spell( nullptr ),
+  proxy_attack( nullptr ),
   role( player->primary_role() )
 {
   parse_options( options_str );
@@ -6620,7 +7166,7 @@ struct start_moving_t : public action_t
     ignore_false_positive = true;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     player->buffs.movement->trigger();
 
@@ -6630,7 +7176,7 @@ struct start_moving_t : public action_t
     update_ready();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( player->buffs.movement->check() )
       return false;
@@ -6650,7 +7196,7 @@ struct stop_moving_t : public action_t
     ignore_false_positive = true;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     player->buffs.movement->expire();
 
@@ -6659,7 +7205,7 @@ struct stop_moving_t : public action_t
     update_ready();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( !player->buffs.movement->check() )
       return false;
@@ -6673,17 +7219,17 @@ struct variable_t : public action_t
   action_var_e operation;
   action_variable_t* var;
   std::string value_str, value_else_str, var_name_str, condition_str;
-  expr_t* value_expression;
-  expr_t* condition_expression;
-  expr_t* value_else_expression;
+  std::unique_ptr<expr_t> value_expression;
+  std::unique_ptr<expr_t> condition_expression;
+  std::unique_ptr<expr_t> value_else_expression;
 
   variable_t( player_t* player, const std::string& options_str ) :
     action_t( ACTION_VARIABLE, "variable", player ),
     operation( OPERATION_SET ),
     var( nullptr ),
-    value_expression( nullptr ),
-    condition_expression( nullptr ),
-    value_else_expression( nullptr )
+    value_expression(),
+    condition_expression(),
+    value_else_expression()
   {
     quiet   = true;
     harmful = proc = callbacks = may_miss = may_crit = may_block = may_parry = may_dodge = false;
@@ -6701,6 +7247,19 @@ struct variable_t : public action_t
     add_option( opt_string( "condition", condition_str ) );
     add_option( opt_string( "value_else", value_else_str ) );
     parse_options( options_str );
+
+    auto option_default = player->apl_variable_map.find( name_str );
+    if ( option_default != player->apl_variable_map.end() )
+    {
+      try
+      {
+        default_ = std::stod( option_default->second );
+      }
+      catch ( const std::exception& )
+      {
+        std::throw_with_nested(std::runtime_error(fmt::format( "Failed to parse player option for variable '{}'", name_str )));
+      }
+    }
 
     if ( name_str.empty() )
     {
@@ -6921,32 +7480,10 @@ struct variable_t : public action_t
   // actions with variable expressions can know if the associated variable is constant
   void optimize_expressions()
   {
-    if ( if_expr )
-    {
-      if_expr = if_expr->optimize();
-    }
-
-    if ( value_expression )
-    {
-      value_expression = value_expression->optimize();
-    }
-
-    if ( condition_expression )
-    {
-      value_expression = value_expression->optimize();
-    }
-
-    if ( value_else_expression )
-    {
-      value_else_expression = value_else_expression->optimize();
-    }
-  }
-
-  ~variable_t()
-  {
-    delete value_expression;
-    delete condition_expression;
-    delete value_else_expression;
+    expr_t::optimize_expression(if_expr);
+    expr_t::optimize_expression(value_expression);
+    expr_t::optimize_expression(condition_expression);
+    expr_t::optimize_expression(value_else_expression);
   }
 
   // Note note note, doesn't do anything that a real action does
@@ -7017,7 +7554,7 @@ struct variable_t : public action_t
         break;
       case OPERATION_PRINT:
         // Only spit out prints in main thread
-        if ( sim->parent == 0 )
+        if ( sim->parent == nullptr )
           std::cout << "actor=" << player->name_str << " time=" << sim->current_time().total_seconds()
                     << " iteration=" << sim->current_iteration << " variable=" << var->name_.c_str()
                     << " value=" << var->current_value_ << std::endl;
@@ -7093,6 +7630,7 @@ struct arcane_torrent_t : public racial_spell_t
     gain_pct( 0 ),
     gain_energy( 0 )
   {
+    harmful = false;
     energize_type = ENERGIZE_ON_CAST;
     // Some specs need special handling here
     switch ( p->specialization() )
@@ -7149,7 +7687,7 @@ struct berserking_t : public racial_spell_t
     harmful = false;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     racial_spell_t::execute();
 
@@ -7167,7 +7705,7 @@ struct blood_fury_t : public racial_spell_t
     harmful = false;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     racial_spell_t::execute();
 
@@ -7185,7 +7723,7 @@ struct darkflight_t : public racial_spell_t
     parse_options( options_str );
   }
 
-  virtual void execute() override
+  void execute() override
   {
     racial_spell_t::execute();
 
@@ -7214,7 +7752,7 @@ struct stoneform_t : public racial_spell_t
     harmful = false;
   }
 
-  virtual void execute() override
+  void execute() override
   {
     racial_spell_t::execute();
 
@@ -7263,7 +7801,8 @@ struct lights_judgment_t : public racial_spell_t
   lights_judgment_t( player_t* p, const std::string& options_str ) :
     racial_spell_t( p, "lights_judgment", p->find_racial_spell( "Light's Judgment" ), options_str )
   {
-    may_miss = callbacks = false;
+    // The cast doesn't trigger combat
+    may_miss = callbacks = harmful = false;
 
     damage = p->find_action( "lights_judgment_damage" );
     if ( damage == nullptr )
@@ -7274,10 +7813,25 @@ struct lights_judgment_t : public racial_spell_t
     add_child( damage );
   }
 
-  // Missile travels for 3 seconds according to tooltip
+  void execute() override
+  {
+    racial_spell_t::execute();
+    // Reduce the cooldown by 1.5s when used during precombat
+    if ( ! player -> in_combat )
+    {
+      cooldown -> adjust( timespan_t::from_seconds( -1.5 ) );
+    }
+  }
+
+  // Missile travels for 3 seconds, stored in missile speed
   timespan_t travel_time() const override
   {
-    return timespan_t::from_seconds( 3.0 );
+    // Reduce the delay before the hit by 1.5s when used during precombat
+    if ( ! player -> in_combat )
+    {
+      return timespan_t::from_seconds( travel_speed - 1.5 );
+    }
+    return timespan_t::from_seconds( travel_speed );
   }
 
   void impact( action_state_t* state ) override
@@ -7361,6 +7915,42 @@ struct fireblood_t : public racial_spell_t
   }
 };
 
+// Haymaker =================================================================
+
+struct haymaker_t : public racial_spell_t
+{
+  haymaker_t( player_t* p, const std::string& options_str ) :
+    racial_spell_t( p, "haymaker", p->find_racial_spell( "Haymaker" ), options_str )
+  {
+    may_crit = true;
+    // Hardcoded in the tooltip.
+    attack_power_mod.direct = 0.75;
+    spell_power_mod.direct = 0.75;
+  }
+
+  double attack_direct_power_coefficient( const action_state_t* s ) const override
+  {
+    auto ap = composite_attack_power() * player->composite_attack_power_multiplier();
+    auto sp = composite_spell_power() * player->composite_spell_power_multiplier();
+
+    if ( ap <= sp )
+      return 0;
+
+    return racial_spell_t::attack_direct_power_coefficient( s );
+  }
+
+  double spell_direct_power_coefficient( const action_state_t* s ) const override
+  {
+    auto ap = composite_attack_power() * player->composite_attack_power_multiplier();
+    auto sp = composite_spell_power() * player->composite_spell_power_multiplier();
+
+    if ( ap > sp )
+      return 0;
+
+    return racial_spell_t::spell_direct_power_coefficient( s );
+  }
+};
+
 // Restart Sequence Action ==================================================
 
 struct restart_sequence_t : public action_t
@@ -7370,7 +7960,7 @@ struct restart_sequence_t : public action_t
 
   restart_sequence_t( player_t* player, const std::string& options_str ) :
     action_t( ACTION_OTHER, "restart_sequence", player ),
-    seq( 0 ),
+    seq( nullptr ),
     seq_name_str( "default" )  // matches default name for sequences
   {
     add_option( opt_string( "name", seq_name_str ) );
@@ -7379,7 +7969,7 @@ struct restart_sequence_t : public action_t
     trigger_gcd           = timespan_t::zero();
   }
 
-  virtual void init() override
+  void init() override
   {
     action_t::init();
 
@@ -7406,14 +7996,14 @@ struct restart_sequence_t : public action_t
     }
   }
 
-  virtual void execute() override
+  void execute() override
   {
     if ( sim->debug )
       sim->out_debug.printf( "%s restarting sequence %s", player->name(), seq_name_str.c_str() );
     seq->restart();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     bool ret = seq && seq->can_restart();
     if ( ret )
@@ -7439,7 +8029,7 @@ struct restore_mana_t : public action_t
     trigger_gcd = timespan_t::zero();
   }
 
-  virtual void execute() override
+  void execute() override
   {
     double mana_missing = player->resources.max[ RESOURCE_MANA ] - player->resources.current[ RESOURCE_MANA ];
     double mana_gain    = mana;
@@ -7477,7 +8067,7 @@ struct wait_fixed_t : public wait_action_base_t
     }
   }
 
-  virtual timespan_t execute_time() const override
+  timespan_t execute_time() const override
   {
     timespan_t wait = timespan_t::from_seconds( time_expr->eval() );
     if ( wait <= timespan_t::zero() )
@@ -7497,7 +8087,7 @@ struct wait_until_ready_t : public wait_fixed_t
     quiet                 = true;
   }
 
-  virtual timespan_t execute_time() const override
+  timespan_t execute_time() const override
   {
     timespan_t wait    = wait_fixed_t::execute_time();
     timespan_t remains = timespan_t::zero();
@@ -7506,7 +8096,7 @@ struct wait_until_ready_t : public wait_fixed_t
     {
       action_t* a = player->action_list[ i ];
       assert( a );
-      if ( a == NULL )  // For release builds.
+      if ( a == nullptr )  // For release builds.
         break;
       if ( a == this )
         break;
@@ -7539,7 +8129,7 @@ struct use_item_t : public action_t
   buff_t* buff;
   cooldown_t* cooldown_group;
   timespan_t cooldown_group_duration;
-  std::string item_name, item_slot;
+  std::string item_name, item_slot, effect_name;
 
   use_item_t( player_t* player, const std::string& options_str ) :
     action_t( ACTION_OTHER, "use_item", player ),
@@ -7551,11 +8141,14 @@ struct use_item_t : public action_t
   {
     add_option( opt_string( "name", item_name ) );
     add_option( opt_string( "slot", item_slot ) );
+    add_option( opt_string( "effect_name", effect_name ) );
     parse_options( options_str );
+
+    special = true;
 
     if ( !item_name.empty() )
     {
-      item = player->find_item( item_name );
+      item = player->find_item_by_name( item_name );
       if ( !item )
       {
         if ( sim->debug )
@@ -7589,13 +8182,29 @@ struct use_item_t : public action_t
           sim->errorf( "Player %s attempting 'use_item' action with invalid item '%s' in slot '%s'.", player->name(),
                        item->name(), item_slot.c_str() );
         }
-        item       = 0;
+        item       = nullptr;
         background = true;
       }
       else
       {
         name_str = name_str + "_" + item->name();
       }
+    }
+    else if ( !effect_name.empty() )
+    {
+      item = player->find_item_by_use_effect_name( effect_name );
+      if ( !item )
+      {
+        if ( sim->debug )
+        {
+          sim->errorf( "Player %s attempting 'use_item' action with effect '%s' which cannot be found.\n",
+                       player->name(), effect_name.c_str() );
+        }
+        background = true;
+        return;
+      }
+
+      name_str = name_str + "_" + item->name();
     }
     else
     {
@@ -7621,8 +8230,6 @@ struct use_item_t : public action_t
 
   void init() override
   {
-    action_t::init();
-
     action_priority_list_t* apl = nullptr;
     if ( action_list )
     {
@@ -7631,7 +8238,9 @@ struct use_item_t : public action_t
 
     if ( !item )
     {
+      action_t::init();
       erase_action( apl );
+      background = true;
       return;
     }
 
@@ -7705,18 +8314,25 @@ struct use_item_t : public action_t
 
       erase_action( apl );
     }
+
+    action_t::init();
+  }
+
+  timespan_t execute_time() const override
+  {
+    return action ? action->execute_time() : action_t::execute_time();
   }
 
   void execute() override
   {
-    bool triggered = buff == 0;
+    bool triggered = buff == nullptr;
     if ( buff )
       triggered = buff->trigger();
 
     if ( triggered && action && ( !buff || buff->check() == buff->max_stack() ) )
     {
       action->target = target;
-      action->schedule_execute();
+      action->execute();
 
       // Decide whether to expire the buff even with 1 max stack
       if ( buff && buff->max_stack() > 1 )
@@ -7760,7 +8376,7 @@ struct use_item_t : public action_t
     return action_t::ready();
   }
 
-  expr_t* create_special_effect_expr( const std::vector<std::string>& data_str_split )
+  std::unique_ptr<expr_t> create_special_effect_expr( const std::vector<std::string>& data_str_split )
   {
     struct use_item_buff_type_expr_t : public expr_t
     {
@@ -7783,28 +8399,28 @@ struct use_item_t : public action_t
 
     if ( data_str_split.size() != 2 || !util::str_compare_ci( data_str_split[ 0 ], "use_buff" ) )
     {
-      return 0;
+      return nullptr;
     }
 
     stat_e stat = util::parse_stat_type( data_str_split[ 1 ] );
     if ( stat == STAT_NONE )
     {
-      return 0;
+      return nullptr;
     }
 
     const special_effect_t* e = item->special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE );
     if ( !e )
     {
-      return 0;
+      return nullptr;
     }
 
-    return new use_item_buff_type_expr_t( e->stat_type() == stat );
+    return std::make_unique<use_item_buff_type_expr_t>( e->stat_type() == stat );
   }
 
-  expr_t* create_expression( const std::string& name_str ) override
+  std::unique_ptr<expr_t> create_expression( const std::string& name_str ) override
   {
     std::vector<std::string> split = util::string_split( name_str, "." );
-    if ( expr_t* e = create_special_effect_expr( split ) )
+    if ( auto e = create_special_effect_expr( split ) )
     {
       return e;
     }
@@ -7828,6 +8444,7 @@ struct use_items_t : public action_t
     custom_slots( false )
   {
     callbacks = may_miss = may_crit = may_block = may_parry = false;
+    special = true;
 
     trigger_gcd = timespan_t::zero();
 
@@ -7842,6 +8459,19 @@ struct use_items_t : public action_t
     return RESULT_HIT;
   }
 
+  timespan_t execute_time() const override
+  {
+    for ( auto action : use_actions )
+    {
+      if ( action->ready() && action->action )
+      {
+        return action->action->execute_time();
+      }
+    }
+
+    return action_t::execute_time();
+  }
+
   void execute() override
   {
     // Execute first ready sub-action. Note that technically an on-use action can go "unavailable"
@@ -7851,6 +8481,7 @@ struct use_items_t : public action_t
     {
       if ( action->ready() )
       {
+        action->set_target( target );
         action->execute();
         break;
       }
@@ -7902,7 +8533,7 @@ struct use_items_t : public action_t
     // that only the designated slots will be checked/executed for a special effect
     priority_slots.clear();
 
-    auto split = util::string_split( ":|", opt_value );
+    auto split = util::string_split( opt_value, ":|" );
     range::for_each( split, [this]( const std::string& slot_str ) {
       auto slot = util::parse_slot_type( slot_str );
       if ( slot != SLOT_INVALID )
@@ -7965,9 +8596,41 @@ struct use_items_t : public action_t
         return;
       }
 
+      // As precombat /use_item,name=X are only used once, don't remove them.
+      if ( action->action_list && action->action_list->name_str == "precombat" && action->action )
+        return;
+
       // Find out if the item is worn
       auto it = range::find_if( player->items, [action]( const item_t& item ) {
         return util::str_compare_ci( item.name(), action->item_name );
+      } );
+
+      // Worn item, remove slot if necessary
+      if ( it != player->items.end() )
+      {
+        auto slot_it = range::find( slot_order, it->slot );
+        if ( slot_it != slot_order.end() )
+        {
+          slot_order.erase( slot_it );
+        }
+      }
+    } );
+
+    // Remove any slots from the list, where the actor has an item equipped, and corresponding a
+    // use_item,effect_name=X action for the item.
+    range::for_each( use_item_actions, [this, &slot_order]( const use_item_t* action ) {
+      if ( action->effect_name.empty() )
+      {
+        return;
+      }
+
+      // As precombat /use_item,effect_name=X are only used once, don't remove them.
+      if ( action->action_list && action->action_list->name_str == "precombat" && action->action )
+        return;
+
+      // Find out if the item is worn
+      auto it = range::find_if( player->items, [action]( const item_t& item ) {
+        return item.has_use_special_effect() && util::str_compare_ci( item.special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE)->name(), action->effect_name );
       } );
 
       // Worn item, remove slot if necessary
@@ -7986,7 +8649,8 @@ struct use_items_t : public action_t
     range::for_each( slot_order, [this]( slot_e slot ) {
       const auto& item     = player->items[ slot ];
       const auto effect_it = range::find_if( item.parsed.special_effects, []( const special_effect_t* e ) {
-        return e->source == SPECIAL_EFFECT_SOURCE_ITEM && e->type == SPECIAL_EFFECT_USE;
+        return (e->source == SPECIAL_EFFECT_SOURCE_ITEM || e->source == SPECIAL_EFFECT_SOURCE_GEM ||
+                e->source == SPECIAL_EFFECT_SOURCE_ENCHANT) && e->type == SPECIAL_EFFECT_USE;
       } );
 
       // No item-based on-use effect in the slot, skip
@@ -8014,20 +8678,29 @@ struct use_items_t : public action_t
 
 struct cancel_buff_t : public action_t
 {
+  std::string buff_name;
   buff_t* buff;
 
   cancel_buff_t( player_t* player, const std::string& options_str ) :
     action_t( ACTION_OTHER, "cancel_buff", player ),
-    buff( 0 )
+    buff_name(),
+    buff( nullptr )
   {
-    std::string buff_name;
     add_option( opt_string( "name", buff_name ) );
     parse_options( options_str );
     ignore_false_positive = true;
+
+    trigger_gcd = timespan_t::zero();
+  }
+
+  void init_finished() override
+  {
+    action_t::init_finished();
+
     if ( buff_name.empty() )
     {
-      sim->errorf( "Player %s uses cancel_buff without specifying the name of the buff\n", player->name() );
-      sim->cancel();
+      throw std::invalid_argument( fmt::format(
+        "Player {} uses cancel_buff without specifying the name of the buff", player->name() ) );
     }
 
     buff = buff_t::find( player, buff_name );
@@ -8040,27 +8713,24 @@ struct cancel_buff_t : public action_t
 
     if ( !buff )
     {
-      sim->errorf( "Player %s uses cancel_buff with unknown buff %s\n", player->name(), buff_name.c_str() );
-      sim->cancel();
+      throw std::invalid_argument( fmt::format(
+        "Player {} uses cancel_buff with unknown buff {}", player->name(), buff_name ) );
     }
     else if ( !buff->can_cancel )
     {
-      sim->errorf( "Player %s uses cancel_buff on %s, which cannot be cancelled in game\n", player->name(),
-                   buff_name.c_str() );
-      sim->cancel();
+      throw std::invalid_argument( fmt::format(
+        "Player {} uses cancel_buff on {}, which cannot be cancelled in game", player->name(), buff_name ) );
     }
-
-    trigger_gcd = timespan_t::zero();
   }
 
-  virtual void execute() override
+  void execute() override
   {
     if ( sim->log )
       sim->out_log.printf( "%s cancels buff %s", player->name(), buff->name() );
     buff->expire();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     if ( !buff || !buff->check() )
       return false;
@@ -8069,96 +8739,30 @@ struct cancel_buff_t : public action_t
   }
 };
 
-struct swap_action_list_t : public action_t
+struct cancel_action_t : public action_t
 {
-  action_priority_list_t* alist;
-
-  swap_action_list_t( player_t* player, const std::string& options_str, const std::string& name = "swap_action_list" ) :
-    action_t( ACTION_OTHER, name, player ),
-    alist( 0 )
+  cancel_action_t( player_t* player, const std::string& options_str ) :
+    action_t( ACTION_OTHER, "cancel_action", player )
   {
-    std::string alist_name;
-    int randomtoggle = 0;
-    add_option( opt_string( "name", alist_name ) );
-    add_option( opt_int( "random", randomtoggle ) );
     parse_options( options_str );
-    ignore_false_positive = true;
-    if ( alist_name.empty() )
-    {
-      sim->errorf( "Player %s uses %s without specifying the name of the action list\n", player->name(), name.c_str() );
-      sim->cancel();
-    }
-
-    alist = player->find_action_priority_list( alist_name );
-
-    if ( !alist )
-    {
-      sim->errorf( "Player %s uses %s with unknown action list %s\n", player->name(), name.c_str(),
-                   alist_name.c_str() );
-      sim->cancel();
-    }
-    else if ( randomtoggle == 1 )
-      alist->random = randomtoggle;
-
+    harmful = false;
+    usable_while_casting = use_while_casting = ignore_false_positive = true;
     trigger_gcd = timespan_t::zero();
-    use_off_gcd = true;
+    action_skill = 1;
   }
 
-  virtual void execute() override
+  void execute() override
   {
-    if ( sim->log )
-      sim->out_log.printf( "%s swaps to action list %s", player->name(), alist->name_str.c_str() );
-    player->activate_action_list( alist, player->readying != nullptr );
+    sim->print_log( "{} performs {}", player->name(), name() );
+    player->interrupt();
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
-    if ( player->active_action_list == alist )
+    if ( !player->executing && !player->channeling )
       return false;
 
     return action_t::ready();
-  }
-};
-
-struct run_action_list_t : public swap_action_list_t
-{
-  run_action_list_t( player_t* player, const std::string& options_str ) :
-    swap_action_list_t( player, options_str, "run_action_list" )
-  {
-    quiet                 = true;
-    ignore_false_positive = true;
-  }
-
-  void init() override
-  {
-    swap_action_list_t::init();
-
-    if ( action_list && alist )
-    {
-      auto action_it  = range::find( action_list->foreground_action_list, this );
-      auto action_idx = std::distance( action_list->foreground_action_list.begin(), action_it );
-      auto it         = range::find_if( alist->parents, [this]( const action_priority_list_t::parent_t& parent ) {
-        return std::get<0>( parent ) == action_list;
-      } );
-
-      if ( it == alist->parents.end() )
-      {
-        alist->parents.push_back( std::make_tuple( action_list, action_idx ) );
-      }
-    }
-  }
-
-  virtual void execute() override
-  {
-    if ( sim->log )
-      sim->out_log.print( "{} runs action list {}{}",
-          player->name(),
-          alist->name_str.c_str(),
-          player->readying ? " (off-gcd)" : "");
-
-    if ( player->restore_action_list == 0 )
-      player->restore_action_list = player->active_action_list;
-    player->activate_action_list( alist, player->readying != nullptr );
   }
 };
 
@@ -8177,15 +8781,15 @@ struct pool_resource_t : public action_t
   int for_next;
   action_t* next_action;
   std::string amount_str;
-  expr_t* amount_expr;
+  std::unique_ptr<expr_t> amount_expr;
 
   pool_resource_t( player_t* p, const std::string& options_str, resource_e r = RESOURCE_NONE ) :
     action_t( ACTION_OTHER, "pool_resource", p ),
     resource( r != RESOURCE_NONE ? r : p->primary_resource() ),
     wait( timespan_t::from_seconds( 0.251 ) ),
     for_next( 0 ),
-    next_action( 0 ),
-    amount_expr( nullptr )
+    next_action( nullptr ),
+    amount_expr()
   {
     quiet = true;
     add_option( opt_timespan( "wait", wait ) );
@@ -8200,11 +8804,6 @@ struct pool_resource_t : public action_t
       if ( res != RESOURCE_NONE )
         resource = res;
     }
-  }
-
-  ~pool_resource_t()
-  {
-    delete amount_expr;
   }
 
   void init_finished() override
@@ -8222,7 +8821,7 @@ struct pool_resource_t : public action_t
     }
   }
 
-  virtual void reset() override
+  void reset() override
   {
     action_t::reset();
 
@@ -8251,7 +8850,7 @@ struct pool_resource_t : public action_t
     }
   }
 
-  virtual void execute() override
+  void execute() override
   {
     if ( sim->log )
       sim->out_log.printf( "%s performs %s", player->name(), name() );
@@ -8259,12 +8858,12 @@ struct pool_resource_t : public action_t
     player->iteration_pooling_time += wait;
   }
 
-  virtual timespan_t gcd() const override
+  timespan_t gcd() const override
   {
     return wait;
   }
 
-  virtual bool ready() override
+  bool ready() override
   {
     bool rd = action_t::ready();
     if ( !rd )
@@ -8311,6 +8910,8 @@ action_t* player_t::create_action( const std::string& name, const std::string& o
     return new darkflight_t( this, options_str );
   if ( name == "fireblood" )
     return new fireblood_t( this, options_str );
+  if ( name == "haymaker" )
+    return new haymaker_t( this, options_str );
   if ( name == "lights_judgment" )
     return new lights_judgment_t( this, options_str );
   if ( name == "rocket_barrage" )
@@ -8320,6 +8921,8 @@ action_t* player_t::create_action( const std::string& name, const std::string& o
   if ( name == "stoneform" )
     return new stoneform_t( this, options_str );
 
+  if ( name == "cancel_action" )
+    return new cancel_action_t( this, options_str );
   if ( name == "cancel_buff" )
     return new cancel_buff_t( this, options_str );
   if ( name == "swap_action_list" )
@@ -8355,6 +8958,9 @@ action_t* player_t::create_action( const std::string& name, const std::string& o
   if ( name == "variable" )
     return new variable_t( this, options_str );
 
+  if ( auto action = azerite::create_action( this, name, options_str ) )
+    return action;
+
   return consumable::create_action( this, name, options_str );
 }
 
@@ -8369,7 +8975,7 @@ void player_t::parse_talents_numbers( const std::string& talent_string )
     char c = talent_string[ i ];
     if ( c < '0' || c > ( '0' + MAX_TALENT_COLS ) )
     {
-      std::runtime_error(fmt::format("Illegal character '{}' in talent encoding.", c ));
+      throw std::runtime_error(fmt::format("Illegal character '{}' in talent encoding.", c ));
     }
     if ( c > '0' )
       talent_points.select_row_col( i, c - '1' );
@@ -8585,7 +9191,7 @@ bool player_t::parse_talents_armory2( const std::string& talents_url )
   if ( spec_type == SPEC_NONE || specialization() != spec_type )
   {
     sim->errorf( "Player %s has malformed talent url '%s': expected specialization '%s', got '%s'", name(),
-                 talents_url.c_str(), dbc::specialization_string( specialization() ).c_str(),
+                 talents_url.c_str(), dbc::specialization_string( specialization() ),
                  split[ OFFSET_SPEC ].c_str() );
     return false;
   }
@@ -8630,7 +9236,7 @@ void player_t::create_talents_wowhead()
   // (total / 4) % 4, and (total / 16) % 4 respectively.
 
   talents_str.clear();
-  std::string result = "http://www.wowhead.com/talent#";
+  std::string result = "https://www.wowhead.com/talent#";
 
   // Class Type
   {
@@ -9113,6 +9719,37 @@ azerite_power_t player_t::find_azerite_spell( const std::string& name, bool toke
   return azerite -> get_power( name, tokenized );
 }
 
+azerite_essence_t player_t::find_azerite_essence( unsigned id ) const
+{
+  if ( !azerite_essence )
+  {
+    return { this };
+  }
+
+  return azerite_essence->get_essence( id );
+}
+
+azerite_essence_t player_t::find_azerite_essence( const std::string& name, bool tokenized ) const
+{
+  if ( !azerite_essence )
+  {
+    return { this };
+  }
+
+  return azerite_essence->get_essence( name, tokenized );
+}
+
+/**
+ * 8.2 Vision of Perfection proc handler
+ *
+ * Carries out class & spec-specific code when Vision of Perfection Procs.
+ * Overridden in class modules.
+ */
+void player_t::vision_of_perfection_proc()
+{
+  return;
+}
+
 /**
  * Tries to find spell data by name.
  *
@@ -9228,7 +9865,7 @@ const spell_data_t* player_t::find_spell( unsigned int id, specialization_e s ) 
 
 namespace
 {
-expr_t* deprecate_expression( player_t& p, const std::string& old_name, const std::string& new_name, action_t* a = nullptr  )
+std::unique_ptr<expr_t> deprecate_expression( player_t& p, const std::string& old_name, const std::string& new_name, action_t* a = nullptr  )
 {
   p.sim->errorf( "Use of \"%s\" ( action %s ) in action expressions is deprecated: use \"%s\" instead.\n",
                   old_name.c_str(), a?a->name() : "unknown", new_name.c_str() );
@@ -9251,13 +9888,13 @@ struct position_expr_t : public player_expr_t
   position_expr_t( const std::string& n, player_t& p, int m ) : player_expr_t( n, p ), mask( m )
   {
   }
-  virtual double evaluate() override
+  double evaluate() override
   {
     return ( 1 << player.position() ) & mask;
   }
 };
 
-expr_t* deprecated_player_expressions( player_t& player, const std::string& expression_str )
+std::unique_ptr<expr_t> deprecated_player_expressions( player_t& player, const std::string& expression_str )
 {
   if ( expression_str == "health_pct" )
     return deprecate_expression( player, expression_str, "health.pct" );
@@ -9280,7 +9917,7 @@ expr_t* deprecated_player_expressions( player_t& player, const std::string& expr
   if ( expression_str == "max_mana_nonproc" )
     return deprecate_expression( player, expression_str, "mana.max_nonproc" );
 
-  return nullptr;
+  return {};
 }
 
 }  // namespace
@@ -9291,14 +9928,14 @@ expr_t* deprecated_player_expressions( player_t& player, const std::string& expr
  * Use this function for expressions which are bound to some action property (eg. target, cast_time, etc.) and not just
  * to the player itself.
  */
-expr_t* player_t::create_action_expression( action_t&, const std::string& name )
+std::unique_ptr<expr_t> player_t::create_action_expression( action_t&, const std::string& name )
 {
   return create_expression( name );
 }
 
-expr_t* player_t::create_expression( const std::string& expression_str )
+std::unique_ptr<expr_t> player_t::create_expression( const std::string& expression_str )
 {
-  if (expr_t* e = deprecated_player_expressions(*this, expression_str))
+  if (auto e = deprecated_player_expressions(*this, expression_str))
   {
     return e;
   }
@@ -9311,6 +9948,9 @@ expr_t* player_t::create_expression( const std::string& expression_str )
 
   if ( expression_str == "self" )
     return expr_t::create_constant( "self", actor_index );
+
+  if ( expression_str == "target" )
+    return make_fn_expr( expression_str, [ this ] { return target->actor_index; } );
 
   if ( expression_str == "in_combat" )
     return make_ref_expr( "in_combat", in_combat );
@@ -9334,6 +9974,9 @@ expr_t* player_t::create_expression( const std::string& expression_str )
     return make_fn_expr( expression_str, [this] { return cache.attack_speed(); } );
 
   if ( expression_str == "spell_haste" )
+    return make_fn_expr( expression_str, [this] { return cache.spell_haste(); } );
+
+  if ( expression_str == "spell_speed" )
     return make_fn_expr( expression_str, [this] { return cache.spell_speed(); } );
 
   if ( expression_str == "mastery_value" )
@@ -9346,9 +9989,9 @@ expr_t* player_t::create_expression( const std::string& expression_str )
     return make_fn_expr( expression_str, [this] { return cache.spell_crit_chance(); } );
 
   if ( expression_str == "position_front" )
-    return new position_expr_t( "position_front", *this, ( 1 << POSITION_FRONT ) | ( 1 << POSITION_RANGED_FRONT ) );
+    return std::make_unique<position_expr_t>( "position_front", *this, ( 1 << POSITION_FRONT ) | ( 1 << POSITION_RANGED_FRONT ) );
   if ( expression_str == "position_back" )
-    return new position_expr_t( "position_back", *this, ( 1 << POSITION_BACK ) | ( 1 << POSITION_RANGED_BACK ) );
+    return std::make_unique<position_expr_t>( "position_back", *this, ( 1 << POSITION_BACK ) | ( 1 << POSITION_RANGED_BACK ) );
 
   if ( expression_str == "time_to_bloodlust" )
     return make_fn_expr( expression_str, [this] { return calculate_time_to_bloodlust(); } );
@@ -9362,7 +10005,7 @@ expr_t* player_t::create_expression( const std::string& expression_str )
   }
 
   // Resource expressions
-  if ( expr_t* q = create_resource_expression( expression_str ) )
+  if ( auto q = create_resource_expression( expression_str ) )
     return q;
 
   // time_to_pct expressions
@@ -9460,10 +10103,10 @@ expr_t* player_t::create_expression( const std::string& expression_str )
         { return var_->current_value_; }
       };
 
-      return new variable_expr_t( this, splits[ 1 ] );
+      return std::make_unique<variable_expr_t>( this, splits[ 1 ] );
     }
 
-    // item equipped by item_id or name
+    // item equipped by item_id or name or effect_name
     if ( splits[ 0 ] == "equipped" )
     {
       unsigned item_id = util::to_unsigned( splits[ 1 ] );
@@ -9474,6 +10117,12 @@ expr_t* player_t::create_expression( const std::string& expression_str )
           return expr_t::create_constant( "item_equipped", 1 );
         }
         else if ( util::str_compare_ci( items[ i ].name_str, splits[ 1 ] ) )
+        {
+          return expr_t::create_constant( "item_equipped", 1 );
+        }
+        else if ( items[ i ].has_use_special_effect() &&
+          util::str_compare_ci(
+            items[ i ].special_effect( SPECIAL_EFFECT_SOURCE_NONE, SPECIAL_EFFECT_USE )->name(), splits[ 1 ] ) )
         {
           return expr_t::create_constant( "item_equipped", 1 );
         }
@@ -9520,7 +10169,6 @@ expr_t* player_t::create_expression( const std::string& expression_str )
     // spec
     if ( splits[ 0 ] == "spec" )
     {
-
       return expr_t::create_constant( "spec", dbc::translate_spec_str( type, splits[1]) == specialization() );
     }
 
@@ -9626,6 +10274,19 @@ expr_t* player_t::create_expression( const std::string& expression_str )
 
       throw std::invalid_argument(fmt::format("Unsupported movement expression '{}'.", splits[ 1 ]));
     }
+
+    // specific bfa. options
+    if ( splits[ 0 ] == "bfa" )
+    {
+      if ( splits[ 1 ] == "font_of_power_precombat_channel" )
+      {
+        return make_fn_expr( expression_str, [this] {
+          return sim->bfa_opts.font_of_power_precombat_channel.total_seconds();
+        } );
+      }
+
+      throw std::invalid_argument( fmt::format( "Unsupported bfa. option '{}'.", splits[ 1 ] ) );
+    }
   } // splits.size() == 2
 
 
@@ -9669,7 +10330,7 @@ expr_t* player_t::create_expression( const std::string& expression_str )
           swing_remains_expr_t( player_t& p, slot_e s ) : player_expr_t( "swing_remains", p ), slot( s )
           {
           }
-          virtual double evaluate() override
+          double evaluate() override
           {
             attack_t* attack = ( slot == SLOT_MAIN_HAND ) ? player.main_hand_attack : player.off_hand_attack;
             if ( attack && attack->execute_event )
@@ -9677,7 +10338,7 @@ expr_t* player_t::create_expression( const std::string& expression_str )
             return 9999;
           }
         };
-        return new swing_remains_expr_t( *this, hand );
+        return std::make_unique<swing_remains_expr_t>( *this, hand );
       }
     }
 
@@ -9723,13 +10384,13 @@ expr_t* player_t::create_expression( const std::string& expression_str )
   // trinkets
   if ( !splits.empty() && splits[ 0 ] == "trinket" )
   {
-    if ( expr_t* expr = unique_gear::create_expression( *this, expression_str ) )
+    if ( auto expr = unique_gear::create_expression( *this, expression_str ) )
       return expr;
   }
 
   if ( splits[ 0 ] == "legendary_ring" )
   {
-    if ( expr_t* expr = unique_gear::create_expression( *this, expression_str ) )
+    if ( auto expr = unique_gear::create_expression( *this, expression_str ) )
       return expr;
   }
 
@@ -9777,7 +10438,7 @@ expr_t* player_t::create_expression( const std::string& expression_str )
 
         // build player/pet expression from the tail of the expression string.
         std::string tail = expression_str.substr( splits[ 1 ].length() + 5 );
-        if ( expr_t* e = pet->create_expression( tail ) )
+        if ( auto e = pet->create_expression( tail ) )
         {
           return e;
         }
@@ -9805,7 +10466,7 @@ expr_t* player_t::create_expression( const std::string& expression_str )
       if ( pet->owner )
       {
         std::string tail = expression_str.substr( 6 );
-        if ( expr_t* e = pet->owner->create_expression( tail ) )
+        if ( auto e = pet->owner->create_expression( tail ) )
         {
           return e;
         }
@@ -9825,10 +10486,15 @@ expr_t* player_t::create_expression( const std::string& expression_str )
     return azerite -> create_expression( splits );
   }
 
+  if ( splits[ 0 ] == "essence" )
+  {
+    return azerite_essence->create_expression( splits );
+  }
+
   return sim->create_expression( expression_str );
 }
 
-expr_t* player_t::create_resource_expression( const std::string& name_str )
+std::unique_ptr<expr_t> player_t::create_resource_expression( const std::string& name_str )
 {
   auto splits = util::string_split( name_str, "." );
   if ( splits.empty() )
@@ -9999,16 +10665,16 @@ double player_t::calculate_time_to_bloodlust() const
   return 3 * sim->expected_iteration_time.total_seconds();
 }
 
-void player_t::recreate_talent_str( talent_format_e format )
+void player_t::recreate_talent_str( talent_format format )
 {
   switch ( format )
   {
-    case TALENT_FORMAT_UNCHANGED:
+    case talent_format::UNCHANGED:
       break;
-    case TALENT_FORMAT_ARMORY:
+    case talent_format::ARMORY:
       create_talents_armory();
       break;
-    case TALENT_FORMAT_WOWHEAD:
+    case talent_format::WOWHEAD:
       create_talents_wowhead();
       break;
     default:
@@ -10048,6 +10714,11 @@ std::string player_t::create_profile( save_e stype )
     {
       profile_str += "timeofday=" + util::to_string( timeofday == player_t::NIGHT_TIME ? "night" : "day" ) + term;
     }
+    if ( race == RACE_ZANDALARI_TROLL )
+    {
+      profile_str += "zandalari_loa=" + util::to_string(zandalari_loa == player_t::AKUNDA ? "akunda" : zandalari_loa == player_t::BWONSAMDI ? "bwonsamdi"
+        : zandalari_loa == player_t::GONK ? "gonk" : zandalari_loa == player_t::KIMBUL ? "kimbul" : zandalari_loa == player_t::KRAGWA ? "kragwa" : "paku") + term;
+    }
     profile_str += "role=";
     profile_str += util::role_type_string( primary_role() ) + term;
     profile_str += "position=" + position_str + term;
@@ -10062,7 +10733,7 @@ std::string player_t::create_profile( save_e stype )
   {
     if ( !talents_str.empty() )
     {
-      recreate_talent_str( sim->talent_format );
+      recreate_talent_str( sim->talent_input_format );
       profile_str += "talents=" + talents_str + term;
     }
 
@@ -10081,6 +10752,15 @@ std::string player_t::create_profile( save_e stype )
       if ( ! azerite_overrides.empty() )
       {
         profile_str += "azerite_override=" + azerite_overrides + term;
+      }
+    }
+
+    if ( azerite_essence )
+    {
+      std::string azerite_essence_str = azerite_essence->option_str();
+      if ( !azerite_essence_str.empty() )
+      {
+        profile_str += "azerite_essences=" + azerite_essence_str + term;
       }
     }
   }
@@ -10303,23 +10983,29 @@ void player_t::copy_from( player_t* source )
   true_level      = source->true_level;
   race_str        = source->race_str;
   timeofday       = source->timeofday;
+  zandalari_loa   = source->zandalari_loa;
   race            = source->race;
   role            = source->role;
   _spec           = source->_spec;
   position_str    = source->position_str;
   professions_str = source->professions_str;
-  source->recreate_talent_str( TALENT_FORMAT_UNCHANGED );
+  source->recreate_talent_str(talent_format::UNCHANGED );
   parse_talent_url( sim, "talents", source->talents_str );
 
   if ( azerite )
   {
     azerite -> copy_overrides( source -> azerite );
   }
+  if ( azerite_essence )
+  {
+    azerite_essence -> copy_state( source -> azerite_essence );
+  }
 
   talent_overrides_str = source->talent_overrides_str;
   action_list_str      = source->action_list_str;
   alist_map            = source->alist_map;
   use_apl              = source->use_apl;
+  apl_variable_map     = source->apl_variable_map;
 
   meta_gem = source->meta_gem;
   for ( size_t i = 0; i < items.size(); i++ )
@@ -10330,7 +11016,7 @@ void player_t::copy_from( player_t* source )
 
   if ( sets != nullptr )
   {
-    sets        = std::unique_ptr<set_bonus_t>( new set_bonus_t( *source->sets ) );
+    sets        = std::make_unique<set_bonus_t>( *source->sets );
     sets->actor = this;
   }
 
@@ -10358,6 +11044,7 @@ void player_t::create_options()
   add_option( opt_func( "talent_override", parse_talent_override ) );
   add_option( opt_string( "race", race_str ) );
   add_option( opt_func( "timeofday", parse_timeofday ) );
+  add_option( opt_func( "zandalari_loa", parse_loa ) );
   add_option( opt_int( "level", true_level, 1, MAX_LEVEL ) );
   add_option( opt_bool( "ready_trigger", ready_type ) );
   add_option( opt_func( "role", parse_role_string ) );
@@ -10369,6 +11056,7 @@ void player_t::create_options()
   add_option( opt_string( "actions", action_list_str ) );
   add_option( opt_append( "actions+", action_list_str ) );
   add_option( opt_map( "actions.", alist_map ) );
+  add_option( opt_map( "apl_variable.", apl_variable_map ) );
   add_option( opt_string( "action_list", choose_action_list ) );
   add_option( opt_bool( "sleeping", initial.sleeping ) );
   add_option( opt_bool( "quiet", quiet ) );
@@ -10516,6 +11204,8 @@ void player_t::create_options()
   {
     add_option( opt_func( "azerite_override", std::bind( &azerite::azerite_state_t::parse_override,
           azerite.get(), std::placeholders::_1, std::placeholders::_2, std::placeholders::_3 ) ) );
+    add_option( opt_func( "azerite_essences", std::bind( &azerite::azerite_essence_state_t::parse_azerite_essence,
+          azerite_essence.get(), std::placeholders::_1, std::placeholders::_2, std::placeholders::_3 ) ) );
   }
 
   // Obsolete options
@@ -10545,6 +11235,10 @@ void player_t::analyze( sim_t& s )
   collected_data.analyze( *this );
 
   range::for_each( buff_list, []( buff_t* b ) { b->analyze(); } );
+
+  range::for_each( proc_list, []( proc_t* pr ) { pr->analyze(); } );
+  range::for_each( uptime_list, []( uptime_t* up ) { up->analyze(); } );
+  range::for_each( benefit_list, []( benefit_t* ben ) { ben->analyze(); } );
 
   range::sort( stats_list, []( const stats_t* l, const stats_t* r ) { return l->name_str < r->name_str; } );
 
@@ -10690,7 +11384,7 @@ void player_t::analyze( sim_t& s )
     }
   }
 
-  recreate_talent_str( s.talent_format );
+  recreate_talent_str( s.talent_input_format );
 }
 
 /**
@@ -10866,14 +11560,14 @@ timespan_t player_t::time_to_move() const
     return timespan_t::zero();
 }
 
-void player_t::trigger_movement( double distance, movement_direction_e direction )
+void player_t::trigger_movement( double distance, movement_direction_type direction )
 {
   // Distance of 0 disables movement
   if ( distance == 0 )
     do_update_movement( 9999 );
   else
   {
-    if ( direction == MOVEMENT_AWAY )
+    if ( direction == movement_direction_type::AWAY )
       current.moving_away = distance;
     else
       current.distance_to_move = distance;
@@ -10896,7 +11590,7 @@ void player_t::update_movement( timespan_t duration )
 
   if ( sim->debug )
   {
-    if ( current.movement_direction == MOVEMENT_TOWARDS )
+    if ( current.movement_direction == movement_direction_type::TOWARDS )
     {
       sim->out_debug.printf(
           "Player %s movement towards target, direction=%s speed=%f distance_covered=%f to_go=%f duration=%f", name(),
@@ -10935,7 +11629,7 @@ void player_t::do_update_movement( double yards )
   {
     // x_position += current.distance_to_move;
     current.distance_to_move   = 0;
-    current.movement_direction = MOVEMENT_NONE;
+    current.movement_direction = movement_direction_type::NONE;
     if ( buffs.movement )
     {
       buffs.movement->expire();
@@ -10953,7 +11647,7 @@ void player_t::do_update_movement( double yards )
     {
       // x_position += yards;
       current.moving_away        = 0;
-      current.movement_direction = MOVEMENT_TOWARDS;
+      current.movement_direction = movement_direction_type::TOWARDS;
       current.distance_to_move -= yards;
     }
   }
@@ -11193,6 +11887,34 @@ double player_stat_cache_t::spell_crit_chance() const
   else
     assert( _spell_crit_chance == player->composite_spell_crit_chance() );
   return _spell_crit_chance;
+}
+
+double player_stat_cache_t::rppm_haste_coeff() const
+{
+  if ( !active || !valid[ CACHE_RPPM_HASTE ] )
+  {
+    valid[ CACHE_RPPM_HASTE ] = true;
+    _rppm_haste_coeff          = 1.0 / std::min( player->cache.spell_haste(), player->cache.attack_haste() );
+  }
+  else
+  {
+    assert( _rppm_haste_coeff == 1.0 / std::min( player->cache.spell_haste(), player->cache.attack_haste() ) );
+  }
+  return _rppm_haste_coeff;
+}
+
+double player_stat_cache_t::rppm_crit_coeff() const
+{
+  if ( !active || !valid[ CACHE_RPPM_CRIT ] )
+  {
+    valid[ CACHE_RPPM_CRIT ] = true;
+    _rppm_crit_coeff          = 1.0 + std::max( player->cache.attack_crit_chance(), player->cache.spell_crit_chance() );
+  }
+  else
+  {
+    assert( _rppm_crit_coeff == 1.0 + std::max( player->cache.attack_crit_chance(), player->cache.spell_crit_chance() ) );
+  }
+  return _rppm_crit_coeff;
 }
 
 double player_stat_cache_t::spell_haste() const
@@ -11464,7 +12186,7 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const a
       {
         buff_args.push_back( b->remains().total_seconds() );
       }
-      buff_list.push_back( std::make_pair( b, buff_args ) );
+      buff_list.emplace_back( b, buff_args );
     }
   }
 
@@ -11479,7 +12201,7 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const a
         std::vector<double> cooldown_args;
         cooldown_args.push_back( c->charges );
         cooldown_args.push_back( c->remains().total_seconds() );
-        cooldown_list.push_back( std::make_pair( c, cooldown_args ) );
+        cooldown_list.emplace_back( c, cooldown_args );
       }
     }
     for ( player_t* current_target : p->sim->target_list )
@@ -11493,10 +12215,10 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const a
           std::vector<double> debuff_args;
           debuff_args.push_back( d->check() );
           debuff_args.push_back( d->remains().total_seconds() );
-          debuff_list.push_back( std::make_pair( d, debuff_args ) );
+          debuff_list.emplace_back( d, debuff_args );
         }
       }
-      target_list.push_back( std::make_pair( current_target, debuff_list ) );
+      target_list.emplace_back( current_target, debuff_list );
     }
   }
 
@@ -11515,8 +12237,8 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const a
 
 player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const timespan_t& ts, const timespan_t& wait,
                                                                          const player_t* p ) :
-  action( 0 ),
-  target( 0 ),
+  action( nullptr ),
+  target( nullptr ),
   time( ts ),
   wait_time( wait )
 {
@@ -11531,7 +12253,7 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const t
       {
         buff_args.push_back( b->remains().total_seconds() );
       }
-      buff_list.push_back( std::make_pair( b, buff_args ) );
+      buff_list.emplace_back( b, buff_args );
     }
   }
 
@@ -11546,7 +12268,7 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const t
         std::vector<double> cooldown_args;
         cooldown_args.push_back( c->charges );
         cooldown_args.push_back( c->remains().total_seconds() );
-        cooldown_list.push_back( std::make_pair( c, cooldown_args ) );
+        cooldown_list.emplace_back( c, cooldown_args );
       }
     }
     for ( player_t* current_target : p->sim->target_list )
@@ -11560,10 +12282,10 @@ player_collected_data_t::action_sequence_data_t::action_sequence_data_t( const t
           std::vector<double> debuff_args;
           debuff_args.push_back( d->check() );
           debuff_args.push_back( d->remains().total_seconds() );
-          debuff_list.push_back( std::make_pair( d, debuff_args ) );
+          debuff_list.emplace_back( d, debuff_args );
         }
       }
-      target_list.push_back( std::make_pair( current_target, debuff_list ) );
+      target_list.emplace_back( current_target, debuff_list );
     }
   }
 
@@ -11634,8 +12356,10 @@ player_collected_data_t::player_collected_data_t( const player_t* player ) :
   max_spike_amount( player->name_str + " Max Spike Value", tank_container_type( player, 2 ) ),
   target_metric( player->name_str + " Target Metric", generic_container_type( player, 1 ) ),
   resource_timelines(),
+  combat_start_resource(
+    ( !player->is_enemy() && ( !player->is_pet() || player->sim->report_pets_separately ) ) ? RESOURCE_MAX : 0 ),
   combat_end_resource(
-      ( !player->is_enemy() && ( !player->is_pet() || player->sim->report_pets_separately ) ) ? RESOURCE_MAX : 0 ),
+    ( !player->is_enemy() && ( !player->is_pet() || player->sim->report_pets_separately ) ) ? RESOURCE_MAX : 0 ),
   stat_timelines(),
   health_changes(),
   health_changes_tmi(),
@@ -11736,6 +12460,12 @@ void player_collected_data_t::merge( const player_t& other_player )
       assert( resource_timelines[ i ].type != RESOURCE_NONE );
       resource_timelines[ i ].timeline.merge( other.resource_timelines[ i ].timeline );
     }
+  }
+
+  for ( size_t i = 0, end = combat_start_resource.size(); i < end; ++i )
+  {
+    combat_start_resource[ i ].merge( other.combat_start_resource[ i ] );
+    combat_end_resource[ i ].merge( other.combat_end_resource[ i ] );
   }
 
   assert( stat_timelines.size() == other.stat_timelines.size() );
@@ -11993,7 +12723,7 @@ void player_collected_data_t::collect_data( const player_t& p )
     health_changes_tmi.merged_timeline.merge( health_changes_tmi.timeline );
 
     // Calculate Theck-Meloree Index (TMI), ETMI, and maximum spike damage
-    if ( !p.is_enemy() )  // Boss TMI is irrelevant, causes problems in iteration #1
+    if ( !p.is_enemy() && p.type != HEALING_ENEMY )  // Boss TMI is irrelevant, causes problems in iteration #1
     {
       if ( f_length )
       {
@@ -12122,7 +12852,9 @@ luxurious_sample_data_t::luxurious_sample_data_t( player_t& p, std::string n ) :
 }
 
 // Note, root call needs to set player_t::visited_apls_ to 0
-action_t* player_t::select_action( const action_priority_list_t& list, bool off_gcd )
+action_t* player_t::select_action( const action_priority_list_t& list,
+                                   execute_type                  type,
+                                   const action_t*               context )
 {
   // Mark this action list as visited with the APL internal id
   visited_apls_ |= list.internal_id_mask;
@@ -12132,17 +12864,29 @@ action_t* player_t::select_action( const action_priority_list_t& list, bool off_
   uint64_t _visited       = visited_apls_;
   size_t attempted_random = 0;
 
-  const auto& action_list = off_gcd ? list.off_gcd_actions : list.foreground_action_list;
+  const std::vector<action_t*>* action_list = nullptr;
+  switch ( type )
+  {
+    case execute_type::OFF_GCD:
+      action_list = &( list.off_gcd_actions );
+      break;
+    case execute_type::CAST_WHILE_CASTING:
+      action_list = &( list.cast_while_casting_actions );
+      break;
+    default:
+      action_list = &( list.foreground_action_list );
+      break;
+  }
 
-  for ( size_t i = 0, num_actions = action_list.size(); i < num_actions; ++i )
+  for ( size_t i = 0, num_actions = action_list->size(); i < num_actions; ++i )
   {
     visited_apls_ = _visited;
-    action_t* a   = 0;
+    action_t* a   = nullptr;
 
     if ( list.random == 1 )
     {
       size_t random = static_cast<size_t>( rng().range( 0, static_cast<double>( num_actions ) ) );
-      a             = action_list[ random ];
+      a             = (*action_list)[ random ];
     }
     else
     {
@@ -12151,7 +12895,7 @@ action_t* player_t::select_action( const action_priority_list_t& list, bool off_
       {
         size_t max_random_attempts = static_cast<size_t>( num_actions * ( skill * 0.5 ) );
         size_t random              = static_cast<size_t>( rng().range( 0, static_cast<double>( num_actions ) ) );
-        a                          = action_list[ random ];
+        a                          = (*action_list)[ random ];
         attempted_random++;
         // Limit the amount of attempts to select a random action based on skill, then bail out and try again in 100 ms.
         if ( attempted_random > max_random_attempts )
@@ -12159,8 +12903,13 @@ action_t* player_t::select_action( const action_priority_list_t& list, bool off_
       }
       else
       {
-        a = action_list[ i ];
+        a = (*action_list)[ i ];
       }
+    }
+
+    if ( context && a == context )
+    {
+      return nullptr;
     }
 
     if ( a->background )
@@ -12190,9 +12939,9 @@ action_t* player_t::select_action( const action_priority_list_t& list, bool off_
         }
 
         // We get an action from the call, return it
-        if ( action_t* real_a = select_action( *call->alist, off_gcd ) )
+        if ( action_t* real_a = select_action( *call->alist, type, context ) )
         {
-          if ( real_a->action_list )
+          if ( context == nullptr && real_a->action_list )
             real_a->action_list->used = true;
           return real_a;
         }
@@ -12205,7 +12954,7 @@ action_t* player_t::select_action( const action_priority_list_t& list, bool off_
     }
   }
 
-  return 0;
+  return nullptr;
 }
 
 player_t* player_t::actor_by_name_str( const std::string& name ) const
@@ -12272,16 +13021,16 @@ slot_e player_t::child_item_slot( const item_t& item ) const
 }
 
 // TODO: This currently does not take minimum GCD into account, should it?
-void player_t::adjust_global_cooldown( haste_type_e haste_type )
+void player_t::adjust_global_cooldown( gcd_haste_type gcd_type )
 {
   // Don't adjust if the current gcd isnt hasted
-  if ( gcd_haste_type == HASTE_NONE )
+  if ( gcd_type == gcd_haste_type::NONE )
   {
     return;
   }
 
   // Don't adjust if the changed haste type isnt current GCD haste scaling type
-  if ( haste_type != HASTE_ANY && gcd_haste_type != haste_type )
+  if ( gcd_type != gcd_haste_type::HASTE && gcd_type != this ->gcd_type )
   {
     return;
   }
@@ -12293,18 +13042,18 @@ void player_t::adjust_global_cooldown( haste_type_e haste_type )
   }
 
   double new_haste = 0;
-  switch ( gcd_haste_type )
+  switch ( gcd_type )
   {
-    case HASTE_SPELL:
+    case gcd_haste_type::SPELL_HASTE:
       new_haste = cache.spell_haste();
       break;
-    case HASTE_ATTACK:
+    case gcd_haste_type::ATTACK_HASTE:
       new_haste = cache.attack_haste();
       break;
-    case SPEED_SPELL:
+    case gcd_haste_type::SPELL_SPEED:
       new_haste = cache.spell_speed();
       break;
-    case SPEED_ATTACK:
+    case gcd_haste_type::ATTACK_SPEED:
       new_haste = cache.attack_speed();
       break;
     // SPEED_ANY and HASTE_ANY are nonsensical, actions have to have a correct GCD haste type so
@@ -12358,10 +13107,10 @@ void player_t::adjust_global_cooldown( haste_type_e haste_type )
   gcd_current_haste_value = new_haste;
 }
 
-void player_t::adjust_auto_attack( haste_type_e haste_type )
+void player_t::adjust_auto_attack( gcd_haste_type type )
 {
   // Don't adjust autoattacks on spell-derived haste
-  if ( haste_type == SPEED_SPELL || haste_type == HASTE_SPELL )
+  if ( type == gcd_haste_type::SPELL_SPEED || type == gcd_haste_type::SPELL_HASTE )
   {
     return;
   }
@@ -12374,45 +13123,60 @@ void player_t::adjust_auto_attack( haste_type_e haste_type )
   current_attack_speed = cache.attack_speed();
 }
 
+timespan_t find_minimum_cd( const std::vector<const cooldown_t*>& list )
+{
+  timespan_t min_ready = timespan_t::min();
+  range::for_each( list, [ &min_ready ]( const cooldown_t* cd ) {
+    if ( min_ready == timespan_t::min() || cd->queueable() < min_ready )
+    {
+      min_ready = cd->queueable();
+    }
+  } );
+
+  return min_ready;
+}
+
 // Calculate the minimum readiness time for all off gcd actions that are flagged as usable during
 // gcd (i.e., action_t::use_off_gcd == true). Note that this does not take into account
 // line_cooldown option, since that is APL-line specific.
 void player_t::update_off_gcd_ready()
 {
-  if ( off_gcd_cd.size() == 0 )
+  if ( off_gcd_cd.size() == 0 && off_gcd_icd.size() == 0 )
   {
     return;
   }
 
-  timespan_t min_ready = timespan_t::max();
-  range::for_each( off_gcd_cd, [&min_ready]( const cooldown_t* cd ) {
-    if ( cd -> ready < min_ready )
-    {
-      min_ready = cd -> ready;
-    }
-  } );
-
-  off_gcd_ready = min_ready;
+  off_gcd_ready = std::max( find_minimum_cd( off_gcd_cd ), find_minimum_cd( off_gcd_icd ) );
 
   if ( sim -> debug )
   {
     sim -> out_debug.print( "{} next off-GCD cooldown ready at {}",
       name(), off_gcd_ready.total_seconds() );
   }
+
+  schedule_off_gcd_ready();
 }
 
-/**
- * Adjust the queue-delayed action execution if the ability currently being executed has a hasted cooldown, and haste
- * changes.
- */
-void player_t::adjust_action_queue_time()
+// Calculate the minimum readiness time for all off gcd actions that are flagged as usable during
+// gcd (i.e., action_t::use_off_gcd == true). Note that this does not take into account
+// line_cooldown option, since that is APL-line specific.
+void player_t::update_cast_while_casting_ready()
 {
-  if ( !queueing )
+  if ( cast_while_casting_cd.size() == 0 && cast_while_casting_icd.size() == 0 )
   {
     return;
   }
 
-  queueing->reschedule_queue_event();
+  cast_while_casting_ready = std::max( find_minimum_cd( cast_while_casting_cd ),
+      find_minimum_cd( cast_while_casting_icd ) );
+
+  if ( sim -> debug )
+  {
+    sim -> out_debug.print( "{} next cast while casting cooldown ready at {}",
+      name(), cast_while_casting_ready.total_seconds() );
+  }
+
+  schedule_cwc_ready();
 }
 
 /**
@@ -12465,18 +13229,58 @@ bool player_t::verify_use_items() const
 }
 
 /**
+ * Reset the main hand (and off hand, if application) swing timer
+ * Optionally delay by a set amount
+ */
+void player_t::reset_auto_attacks( timespan_t delay )
+{
+  if ( sim->debug )
+  {
+    if ( delay == timespan_t::zero() )
+    {
+      sim->print_debug( "Resetting auto attack swing timers" );
+    }
+    else
+    {
+      sim->print_debug( "Resetting auto attack swing timers with an additional delay of {}", delay );
+    }
+  }
+
+  if ( main_hand_attack && main_hand_attack->execute_event )
+  {
+    event_t::cancel( main_hand_attack->execute_event );
+    main_hand_attack->schedule_execute();
+    if ( delay > timespan_t::zero() )
+    {
+      main_hand_attack->execute_event->reschedule( main_hand_attack->execute_event->remains() + delay );
+    }
+  }
+
+  if ( off_hand_attack && off_hand_attack->execute_event )
+  {
+    event_t::cancel( off_hand_attack->execute_event );
+    off_hand_attack->schedule_execute();
+    if ( delay > timespan_t::zero() )
+    {
+      off_hand_attack->execute_event->reschedule( off_hand_attack->execute_event->remains() + delay );
+    }
+  }
+}
+
+/**
  * Poor man's targeting support. Acquire_target is triggered by various events (see retarget_event_e) in the core.
  * Context contains the triggering entity (if relevant). Figures out a target out of all non-sleeping targets.
  * Skip "invulnerable" ones for now, anything else is fair game.
  */
-void player_t::acquire_target( retarget_event_e event, player_t* context )
+void player_t::acquire_target( retarget_source event, player_t* context )
 {
   // TODO: This skips certain very custom targets (such as Soul Effigy), is it a problem (since those
   // usually are handled in action target cache regeneration)?
   if ( sim->debug )
   {
-    sim->out_debug.printf( "%s retargeting event=%s context=%s", name(), util::retarget_event_string( event ),
-                           context ? context->name() : "NONE" );
+    sim->out_debug.printf( "%s retargeting event=%s context=%s current_target=%s", name(),
+        util::retarget_event_string( event ),
+        context ? context->name() : "NONE", target ? target->name() : "NONE" );
   }
 
   player_t* candidate_target = nullptr;
@@ -12498,6 +13302,14 @@ void player_t::acquire_target( retarget_event_e event, player_t* context )
     break;
   }
 
+  // Invulnerable targets are currently not in the target_non_sleeping_list, so fall back to
+  // checking if the first target has the invulnerability buff up, and use that as the fallback
+  auto first_target = sim->target_list.data().front();
+  if ( !first_invuln_target && first_target->debuffs.invulnerable->up() )
+  {
+    first_invuln_target = first_target;
+  }
+
   // Only perform target acquisition if the actor's current target would change (to the candidate
   // target).
   if ( candidate_target && candidate_target != target )
@@ -12516,7 +13328,7 @@ void player_t::acquire_target( retarget_event_e event, player_t* context )
     trigger_ready();
   }
   // If we really cannot find any sensible target, fall back to the first invulnerable target
-  else if ( first_invuln_target && first_invuln_target != target )
+  else if ( ! candidate_target && first_invuln_target && first_invuln_target != target )
   {
     if ( sim->debug )
     {
@@ -12531,6 +13343,16 @@ void player_t::acquire_target( retarget_event_e event, player_t* context )
     } );
 
     trigger_ready();
+  }
+
+  if ( candidate_target || first_invuln_target )
+  {
+    // Finally, re-acquire targeting for all dynamic targeting actions. This needs to be done
+    // separately, as their targeting is not strictly bound to player_t::target (i.e., "the players
+    // target")
+    range::for_each( dynamic_target_action_list, [event, context, candidate_target, first_invuln_target]( action_t* action ) {
+      action->acquire_target( event, context, candidate_target ? candidate_target : first_invuln_target );
+    } );
   }
 }
 
@@ -12549,6 +13371,14 @@ void player_t::activate()
 
   // .. and activate all actor pets
   range::for_each( pet_list, []( player_t* p ) { p->activate(); } );
+
+  // .. aaand activate any special effect with an activation callback
+  range::for_each( special_effects, []( special_effect_t* e ) {
+    if ( e->activation_cb )
+    {
+      e->activation_cb();
+    }
+  } );
 }
 
 void player_t::deactivate()
@@ -12560,12 +13390,12 @@ void player_t::deactivate()
 
 void player_t::register_combat_begin( buff_t* b )
 {
-  combat_begin_functions.push_back( [ b ]( player_t* ) { b -> trigger(); } );
+  combat_begin_functions.emplace_back([ b ]( player_t* ) { b -> trigger(); } );
 }
 
 void player_t::register_combat_begin( action_t* a )
 {
-  combat_begin_functions.push_back( [ a ]( player_t* ) { a -> execute(); } );
+  combat_begin_functions.emplace_back([ a ]( player_t* ) { a -> execute(); } );
 }
 
 void player_t::register_combat_begin( const combat_begin_fn_t& fn )
@@ -12575,14 +13405,14 @@ void player_t::register_combat_begin( const combat_begin_fn_t& fn )
 
 void player_t::register_combat_begin( double amount, resource_e resource, gain_t* g )
 {
-  combat_begin_functions.push_back( [ amount, resource, g ]( player_t* p ) {
+  combat_begin_functions.emplace_back([ amount, resource, g ]( player_t* p ) {
     p -> resource_gain( resource, amount, g );
   });
 }
 
 std::ostream& operator<<(std::ostream &os, const player_t& p)
 {
-  fmt::print(os, "Player '{}' ({})", p.name(), util::player_type_string(p.type) );
+  fmt::print(os, "player '{}'", p.name() );
   return os;
 }
 

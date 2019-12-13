@@ -50,12 +50,12 @@ std::vector<std::string> _hotfix_effect_map = {
   "Chain Multiplier",
   "Points per Combo Points",
   "Points per Level",
-  "Die Sides",
   "Mechanic",
   "Chain Targets",
   "Target 1",
   "Target 2",
-  "Value Multiplier"
+  "Value Multiplier",
+  "PvP Coefficient"
 };
 
 std::vector<std::string> _hotfix_spell_map = {
@@ -95,7 +95,8 @@ std::vector<std::string> _hotfix_spell_map = {
   "Spell Family",
   "Stance Mask",
   "Mechanic",
-  "Power Id",
+  "Azerite Power Id",
+  "Azerite Essence Id",
   "Description",
   "Tooltip",
   "Variables",
@@ -333,6 +334,8 @@ const std::unordered_map<unsigned, std::string> _race_map {
   { 27, "Highmountain Tauren" },
   { 28, "Void Elf"            },
   { 29, "Lightforged Draenei" },
+  { 30, "Zandalari Troll" },
+  { 31, "Kul Tiran" }
 };
 
 static const std::unordered_map<unsigned, const std::string> _targeting_strings = {
@@ -696,6 +699,7 @@ static const std::unordered_map<unsigned, const std::string> _effect_subtype_str
   { 320, "Modify Ranged Attack Speed%"                  },
   { 329, "Modify Resource Generation%"                  },
   { 330, "Cast while Moving (Whitelist)"                },
+  { 334, "Modify Auto Attack Critical Chance"           },
   { 342, "Modify Ranged and Melee Attack Speed%"        },
   { 343, "Modify Auto Attack Damage Taken% from Caster" },
   { 344, "Modify Auto Attack Damage Done%"              },
@@ -813,6 +817,57 @@ void spell_flags_xml( const spell_data_t* spell, xml_node_t* parent )
 
   if ( spell -> flags( spell_attribute::SX_PASSIVE ) )
     parent -> add_parm( "passive", "true" );
+}
+
+std::string azerite_essence_str( const spell_data_t* spell,
+                             const arv::array_view<azerite_essence_power_entry_t>& data )
+{
+  // Locate spell in the array
+  auto it = range::find_if( data, [ spell ]( const azerite_essence_power_entry_t& e ) {
+    return e.spell_id_base[ 0 ] == spell->id() || e.spell_id_base[ 1 ] == spell->id() ||
+           e.spell_id_upgrade[ 0 ] == spell->id() || e.spell_id_upgrade[ 1 ] == spell->id();
+  } );
+
+  if ( it == data.end() )
+  {
+    return "";
+  }
+
+  std::ostringstream s;
+
+  s << "(";
+
+  s << "Type: ";
+
+  if ( it->spell_id_base[ 0 ] == spell->id() )
+  {
+    s << "Major/Base";
+  }
+  else if ( it->spell_id_base[ 1 ] == spell->id() )
+  {
+    s << "Minor/Base";
+  }
+  else if ( it->spell_id_upgrade[ 0 ] == spell->id() )
+  {
+    s << "Major/Upgrade";
+  }
+  else if ( it->spell_id_upgrade[ 1 ] == spell->id() )
+  {
+    s << "Minor/Upgrade";
+  }
+  else
+  {
+    s << "Unknown";
+  }
+  s << ", ";
+
+
+  s << "Rank: " << it->rank;
+
+
+  s << ")";
+
+  return s.str();
 }
 
 } // unnamed namespace
@@ -936,6 +991,11 @@ std::ostringstream& spell_info::effect_to_str( const dbc_t& dbc,
     {
       item_budget = ilevel_data.damage_replace_stat;
     }
+    else if ( spell->scaling_class() == PLAYER_NONE &&
+              spell->flags( spell_attribute::SX_SCALE_ILEVEL ) )
+    {
+      item_budget = ilevel_data.damage_secondary;
+    }
 
     s << item_budget * e -> m_coefficient() * coefficient;
 
@@ -979,6 +1039,12 @@ std::ostringstream& spell_info::effect_to_str( const dbc_t& dbc,
   {
     snprintf( tmp_buffer, sizeof( tmp_buffer ), "%.5f", e -> ap_coeff() );
     s << " | AP Coefficient: " << tmp_buffer;
+  }
+
+  if ( e -> pvp_coeff() != 0 )
+  {
+    snprintf( tmp_buffer, sizeof( tmp_buffer ), "%.5f", e -> pvp_coeff() );
+    s << " | PvP Coefficient: " << tmp_buffer;
   }
 
   if ( e -> chain_target() != 0 )
@@ -1385,6 +1451,24 @@ std::string spell_info::to_str( const dbc_t& dbc, const spell_data_t* spell, int
     s << std::endl;
   }
 
+  if ( spell->equipped_class() == ITEM_CLASS_WEAPON )
+  {
+    std::vector<std::string> weapon_types;
+    for ( auto wt = ITEM_SUBCLASS_WEAPON_AXE; wt < ITEM_SUBCLASS_WEAPON_FISHING_POLE; ++wt )
+    {
+      if ( spell->equipped_subclass_mask() & ( 1 << static_cast<unsigned>( wt ) ) )
+      {
+        weapon_types.emplace_back(util::weapon_subclass_string( wt ) );
+      }
+    }
+    s << "Requires weapon  : ";
+    if ( weapon_types.size() > 0 )
+    {
+      s << util::string_join( weapon_types );
+    }
+    s << std::endl;
+  }
+
   if ( spell -> cooldown() > timespan_t::zero() )
     s << "Cooldown         : " << spell -> cooldown().total_seconds() << " seconds" << std::endl;
 
@@ -1557,6 +1641,16 @@ std::string spell_info::to_str( const dbc_t& dbc, const spell_data_t* spell, int
   if ( spell -> power_id() > 0 )
   {
     s << "Azerite Power Id : " << spell -> power_id() << std::endl;
+  }
+
+  if ( spell->essence_id() > 0 )
+  {
+    s << "Azerite EssenceId: " << spell->essence_id() << " ";
+
+    const auto data = azerite_essence_power_entry_t::data_by_essence_id( spell->essence_id(), dbc.ptr );
+
+    s << azerite_essence_str( spell, data );
+    s << std::endl;
   }
 
   if ( spell -> proc_flags() > 0 )

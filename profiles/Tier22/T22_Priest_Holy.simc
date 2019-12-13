@@ -9,8 +9,8 @@ talents=1300031
 
 # Default consumables
 potion=battle_potion_of_intellect
-flask=endless_fathoms
-food=bountiful_captains_feast
+flask=greater_flask_of_endless_fathoms
+food=baked_port_tato
 augmentation=battle_scarred
 
 # This default action priority list is automatically created based on your character.
@@ -53,7 +53,7 @@ head=visage_of_the_ascended_prophet,id=160719,bonus_id=4824/1507/4775,azerite_po
 neck=heart_of_azeroth,id=158075,bonus_id=4929/4930/4936/1536,azerite_level=33
 shoulders=amice_of_corrupting_horror,id=160726,bonus_id=4824/1507/4775,azerite_powers=485/461/13
 back=cloak_of_rippling_whispers,id=160642,bonus_id=4800/1507
-chest=inmates_straight_robe,id=159268,bonus_id=1557/4819/4775/4786,azerite_powers=479/22/13
+chest=robes_of_the_unraveler,id=160614,bonus_id=4824/1507/4775,azerite_powers=483/30/13
 wrists=wraps_of_everliving_fealty,id=158348,bonus_id=4779/1542/4786
 hands=mutagenic_protofluid_handwraps,id=160715,bonus_id=4800/1507
 waist=cord_of_septic_envelopment,id=160727,bonus_id=4800/1507
@@ -71,7 +71,7 @@ off_hand=uldir_subject_manifest,id=160695,bonus_id=4800/1507
 # gear_stamina=7030
 # gear_intellect=5138
 # gear_crit_rating=1517
-# gear_haste_rating=1183
+# gear_haste_rating=1189
 # gear_mastery_rating=251
 # gear_versatility_rating=177
-# gear_armor=1136
+# gear_armor=1143

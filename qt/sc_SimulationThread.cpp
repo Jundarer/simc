@@ -60,7 +60,7 @@ void SC_SimulateThread::run()
 
     if ( sim -> challenge_mode ) sim -> scale_to_itemlevel = 630;
 
-    if ( sim -> spell_query != 0 )
+    if ( sim -> spell_query != nullptr )
     {
       success = false;
       return;
@@ -93,7 +93,15 @@ void SC_SimulateThread::run()
     error_category = tr("Simulation runtime error");
     std::string error_str_;
     print_exception(error_str_, e);
-    error_str = QString::fromStdString(error_str_);
+    range::for_each( sim->error_list, [ this ]( const std::string& str ) {
+      if ( !error_str.isEmpty() )
+      {
+        error_str += "\n";
+      }
+
+      error_str += QString::fromStdString( str );
+    } );
+    error_str += QString::fromStdString(error_str_);
   }
 }
 

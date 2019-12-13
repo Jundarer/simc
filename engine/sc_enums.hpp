@@ -10,6 +10,16 @@
 // Enumerations =============================================================
 // annex _e to enumerations
 
+
+// Type of internal execution of an action
+enum class execute_type : unsigned
+{
+  FOREGROUND = 0u,
+  OFF_GCD,
+  CAST_WHILE_CASTING
+};
+
+
 // Source of the profile, defaults to command line / addon / etc
 enum class profile_source
 {
@@ -18,21 +28,31 @@ enum class profile_source
 };
 
 // Attack power computation modes for Battle for Azeroth+
-enum attack_power_e
+enum class attack_power_type
 {
-  AP_NONE = -1,         /// Unset value
-  AP_WEAPON_MH = 0,     /// Default mode, Attack power is a composite of power and mainhand weapon dps
-  AP_WEAPON_OH,         /// Attack power is a composite of power and offhand weapon dps
-  AP_WEAPON_BOTH,       /// Attack power is a composite of power and both weapon dps
-  AP_NO_WEAPON,         /// Attack power is purely based on player power (main stat)
-  AP_DEFAULT = AP_WEAPON_MH,
+  // Let SimC figure out BfA attack power mode based on information assigned to the action object.
+  NONE = -1,
+
+  // Default mode, Attack power is a composite of power and mainhand weapon dps
+  WEAPON_MAINHAND = 0,
+
+  // Attack power is a composite of power and offhand weapon dps
+  WEAPON_OFFHAND,
+
+  // Attack power is a composite of power and both weapon dps
+  WEAPON_BOTH,
+
+  // Attack power is purely based on player power (main stat)
+  NO_WEAPON,
+
+  DEFAULT = WEAPON_MAINHAND,
 };
 
 
-// Retargeting request event sources. Context in ACTOR_ is the actor that triggered the event
-enum retarget_event_e
+// Retargeting request (event) sources. Context in ACTOR_ is the actor that triggered the event
+enum class retarget_source
 {
-  ACTOR_ARISE = 0U,     // Any actor arises
+  ACTOR_ARISE,          // Any actor arises
   ACTOR_DEMISE,         // Any actor demises
   ACTOR_INVULNERABLE,   // Actor becomes invulnerable
   ACTOR_VULNERABLE,     // Actor becomes vulnerable (after becoming invulnerable)
@@ -42,10 +62,10 @@ enum retarget_event_e
 // Misc Constants
 enum
 {
-  MAX_ARTIFACT_POWER = 29, /// Maximum number of artifact perks per weapon. Looks like max is 17 on weapons but setting higher just in case -- 2016/04/04 - Twintop. Increase to 25 to encompass new traits.
-
   MAX_ARTIFACT_RELIC = 4,
-  RELIC_ILEVEL_BONUS_CURVE = 1718, /// Seemingly hard coded CurvePoint identifier for the data that returns the item level increase of a relic, based on the relic's own item level
+
+  // Seemingly hard coded CurvePoint identifier for the data that returns the item level increase of a relic, based on the relic's own item level
+  RELIC_ILEVEL_BONUS_CURVE = 1718,
 
   ITEM_TRINKET_BURST_CATEGORY = 1141, /// Trinket On-Use effect default category (for shared CD)
   MAX_GEM_SLOTS = 4, /// Global maximum number of gem slots in any specific item
@@ -53,46 +73,52 @@ enum
   WEAPON_POWER_COEFFICIENT = 6, // WDPS -> Attack Power Coefficient used for BfA Attack Power calculations
 
   MAX_AZERITE_LEVEL = 300, // Maximum Azerite level (for Heart of Azeroth) at the start of Battle for Azeroth
+
+  MAX_AZERITE_ESSENCE_RANK = 4u, // Maximum Azerite Essence power rank for patch BfA 8.2.0
 };
 
-// Azerite control
-enum azerite_control
+// Enable/Disable azerite effects
+enum class azerite_control
 {
-  AZERITE_ENABLED = 0,          /// All azerite-related effects enabled (default)
-  AZERITE_DISABLED_ITEMS,       /// Azerite effects from items are disabled
-  AZERITE_DISABLED_ALL          /// All azerite-related effects disabled
+  ENABLED,          // All azerite-related effects enabled (default)
+  DISABLED_ITEMS,   // Azerite effects from items are disabled
+  DISABLED_ALL      // All azerite-related effects disabled
 };
 
-enum regen_type_e
+enum class regen_type
 {
-  /**
-   * @brief Old resource regeneration model.
-   *
-   * Actors regen every 'periodicity' seconds through a single global event.
-   * Default.
+  /*
+   Old resource regeneration model.
+  
+   Actors regen every 'periodicity' seconds through a single global event.
+   Default.
    */
-  REGEN_STATIC,
+   STATIC,
 
-  /**
-   * @brief Dynamic resource regeneration model.
-   *
-   * Resources are regenerated at dynamic intervals when an actor is about to
-   * execute an action, and when the state of the actor changes in a way that
-   * affects resource regeneration.
-   *
-   * See comment on player_t::regen_caches how to define what state changes
-   * affect resource regneration.
+  /*
+   Dynamic resource regeneration model.
+   
+   Resources are regenerated at dynamic intervals when an actor is about to
+   execute an action, and when the state of the actor changes in a way that
+   affects resource regeneration.
+   
+   See comment on player_t::regen_caches how to define what state changes
+   affect resource regneration.
    */
-  REGEN_DYNAMIC,
+  DYNAMIC,
 
-  /// Resource regeneration is disabled for the actor
-  REGEN_DISABLED
+  // Resource regeneration is disabled for the actor
+  DISABLED
 };
 
 enum class buff_tick_behavior
 {
   NONE,
+
+  // tick timer is reset on refresh of the dot/buff (next tick is rescheduled)
   CLIP,
+
+  // tick timer stays intact on refresh of the dot/buff (next tick won't be rescheduled)
   REFRESH
 };
 
@@ -103,34 +129,32 @@ enum class buff_tick_time_behavior
   CUSTOM
 };
 
-/**
- * @brief Buff refresh mechanism during trigger.
- *
- * Defaults to _PANDEMIC for ticking buffs,
- * _DURATION for normal buffs.
+/*
+ Buff refresh mechanism during trigger.
+
+ Defaults to _PANDEMIC for ticking buffs, DURATION for normal buffs.
  */
 enum class buff_refresh_behavior
 {
-  /// Constructor default, determines "autodetection" in buff_t::buff_t
+  // Constructor default, determines "autodetection" in buff_t::buff_t
   NONE = -1,
 
-  /// Disable refresh by triggering
+  // Disable refresh by triggering
   DISABLED,
 
-  /// Refresh to given duration
+  // Refresh to given duration
   DURATION,
 
-  /// Refresh to given duration plus remaining duration
+  // Refresh to given duration plus remaining duration
   EXTEND,
 
-  /// Refresh to given duration plus min( 0.3 * new_duration, remaining_duration
-  /// )
+  // Refresh to given duration plus min(0.3 * new_duration, remaining_duration)
   PANDEMIC,
 
-  /// Refresh to given duration plus ongoing tick time
+  // Refresh to given duration plus ongoing tick time
   TICK,
 
-  /// Refresh to duration returned by the custom callback
+  // Refresh to duration returned by the custom callback
   CUSTOM,
 };
 
@@ -138,33 +162,26 @@ enum class buff_stack_behavior
 {
   DEFAULT,
 
-  /**
-   * Asynchronous buffs use separate duration for each stack application.
-   * -> Each stack expires on its own.
-   */
+  // Asynchronous buffs use separate duration for each stack application. This means that each stack expires on its own.
   ASYNCHRONOUS,
 };
 
-enum movement_direction_e
+enum class movement_direction_type : int
 {
-  MOVEMENT_UNKNOWN = -1,
-  MOVEMENT_NONE,
-  MOVEMENT_OMNI,
-  MOVEMENT_TOWARDS,
-  MOVEMENT_AWAY,
-  MOVEMENT_RANDOM,  // Reserved for raid event
-  MOVEMENT_DIRECTION_MAX,
-  MOVEMENT_RANDOM_MIN = MOVEMENT_OMNI,
-  MOVEMENT_RANDOM_MAX = MOVEMENT_RANDOM
+  NONE,
+  OMNI,
+  TOWARDS,
+  AWAY,
+  RANDOM, // Reserved for raid event. Chooses random direction from {OMNI, TOWARDS, AWAY}
+  MAX,
 };
 
-enum talent_format_e
+enum class talent_format
 {
-  TALENT_FORMAT_NUMBERS = 0,
-  TALENT_FORMAT_ARMORY,
-  TALENT_FORMAT_WOWHEAD,
-  TALENT_FORMAT_UNCHANGED,
-  TALENT_FORMAT_MAX
+  NUMBERS,
+  ARMORY,
+  WOWHEAD,
+  UNCHANGED
 };
 
 enum race_e
@@ -177,6 +194,7 @@ enum race_e
   RACE_HUMANOID,
   RACE_DEMON,
   RACE_ELEMENTAL,
+  RACE_ABERRATION,
   // Player Races
   RACE_NIGHT_ELF,
   RACE_HUMAN,
@@ -199,6 +217,8 @@ enum race_e
   RACE_NIGHTBORNE,
   RACE_DARK_IRON_DWARF,
   RACE_MAGHAR_ORC,
+  RACE_ZANDALARI_TROLL,
+  RACE_KUL_TIRAN,
 
   RACE_UNKNOWN,
   RACE_MAX
@@ -345,9 +365,9 @@ enum pet_e
   PET_MAX
 };
 
-enum dmg_e
+enum class result_amount_type
 {
-  RESULT_TYPE_NONE = -1,
+  NONE = -1,
   DMG_DIRECT       = 0,
   DMG_OVER_TIME    = 1,
   HEAL_DIRECT,
@@ -495,6 +515,7 @@ enum special_effect_source_e
   SPECIAL_EFFECT_SOURCE_SOCKET_BONUS,
   SPECIAL_EFFECT_SOURCE_RACE,
   SPECIAL_EFFECT_SOURCE_AZERITE,
+  SPECIAL_EFFECT_SOURCE_AZERITE_ESSENCE,
   SPECIAL_EFFECT_SOURCE_FALLBACK
 };
 
@@ -750,9 +771,9 @@ enum slot_e  // these enum values match armory settings
   SLOT_MIN       = 0
 };
 
-// Tiers 13..22 + PVP
-const unsigned N_TIER   = 10;
-const unsigned MIN_TIER = 13;
+// Tiers 14..27 + PVP
+const unsigned N_TIER   = 15;
+const unsigned MIN_TIER = 14;
 
 // Set bonus .. bonus. They map to a vector internally, so each enum value is just the vector
 // element index.
@@ -795,6 +816,9 @@ enum set_bonus_type_e
   T19,
   T20,
   T21,
+  T21P_G1,
+  T23_GIFT_OF_THE_LOA,
+  T23_KEEPSAKES,
 
   SET_BONUS_MAX
 };
@@ -918,12 +942,14 @@ enum stat_e
   STAT_LEECH_RATING,
   STAT_SPEED_RATING,
   STAT_AVOIDANCE_RATING,
+  STAT_CORRUPTION,
+  STAT_CORRUPTION_RESISTANCE,
   STAT_ARMOR,
   STAT_BONUS_ARMOR,
   STAT_RESILIENCE_RATING,
   STAT_DODGE_RATING,
   STAT_PARRY_RATING,
-  STAT_BLOCK_RATING,
+  STAT_BLOCK_RATING, // Block CHANCE rating. Block damage reduction is in player_t::composite_block_reduction()
   STAT_PVP_POWER,
   STAT_WEAPON_DPS,
   STAT_WEAPON_OFFHAND_DPS,
@@ -943,6 +969,35 @@ check( STR_AGI );
 check( STR_INT );
 check( STR_AGI_INT );
 #undef check
+
+enum rating_e
+{
+  RATING_DODGE = 0,
+  RATING_PARRY,
+  RATING_BLOCK,
+  RATING_MELEE_HIT,
+  RATING_RANGED_HIT,
+  RATING_SPELL_HIT,
+  RATING_MELEE_CRIT,
+  RATING_RANGED_CRIT,
+  RATING_SPELL_CRIT,
+  RATING_PVP_RESILIENCE,
+  RATING_LEECH,
+  RATING_MELEE_HASTE,
+  RATING_RANGED_HASTE,
+  RATING_SPELL_HASTE,
+  RATING_EXPERTISE,
+  RATING_MASTERY,
+  RATING_PVP_POWER,
+  RATING_DAMAGE_VERSATILITY,
+  RATING_HEAL_VERSATILITY,
+  RATING_MITIGATION_VERSATILITY,
+  RATING_SPEED,
+  RATING_AVOIDANCE,
+  RATING_CORRUPTION,
+  RATING_CORRUPTION_RESISTANCE,
+  RATING_MAX
+};
 
 inline stat_e stat_from_attr( attribute_e a )
 {
@@ -990,10 +1045,11 @@ enum cache_e
   CACHE_CRIT_CHANCE,
   CACHE_ATTACK_CRIT_CHANCE,
   CACHE_SPELL_CRIT_CHANCE,
+  CACHE_RPPM_CRIT,
   CACHE_HASTE,
   CACHE_ATTACK_HASTE,
   CACHE_SPELL_HASTE,
-  CACHE_SPEED,
+  CACHE_RPPM_HASTE,
   CACHE_ATTACK_SPEED,
   CACHE_SPELL_SPEED,
   CACHE_VERSATILITY,
@@ -1012,6 +1068,8 @@ enum cache_e
   CACHE_LEECH,
   CACHE_RUN_SPEED,
   CACHE_AVOIDANCE,
+  CACHE_CORRUPTION,
+  CACHE_CORRUPTION_RESISTANCE,
   CACHE_PLAYER_DAMAGE_MULTIPLIER,
   CACHE_PLAYER_HEAL_MULTIPLIER,
   CACHE_MAX
@@ -1233,14 +1291,14 @@ enum action_energize_e
   ENERGIZE_PER_TICK
 };
 
-// A simple enumeration to indicate a broad haste stat type for various things in the simulator
-enum haste_type_e
+// Global cooldown speed-up type
+enum class gcd_haste_type
 {
-  HASTE_NONE = 0U,
-  HASTE_SPELL,
-  HASTE_ATTACK, // TODO: This should probably be Range/Melee
-  SPEED_SPELL,
-  SPEED_ATTACK,
-  HASTE_ANY, // Special value to indicate any (all) haste types
-  SPEED_ANY,
+  NONE,
+  // any (all) haste types
+  HASTE,
+  SPELL_HASTE,
+  ATTACK_HASTE, // TODO: This should probably be Range/Melee
+  SPELL_SPEED,
+  ATTACK_SPEED,
 };

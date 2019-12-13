@@ -29,8 +29,7 @@ item_t::item_t( player_t* p, const std::string& o ) :
   is_ptr( p -> dbc.ptr ),
   parsed(),
   xml(),
-  options_str( o ), option_initial_cd(0),
-  cached_upgrade_item_level( -1 )
+  options_str( o ), option_initial_cd(0)
 {
   parsed.data.name = name_str.c_str();
 }
@@ -144,10 +143,6 @@ gear_stats_t item_t::total_stats() const
     range::for_each( parsed.addon_stats, [ stat, to, &total_stats ]( const stat_pair_t& s ) {
       if ( stat == s.stat ) total_stats.add_stat( to, s.value );
     });
-
-    range::for_each( parsed.suffix_stats, [ stat, to, &total_stats ]( const stat_pair_t& s ) {
-      if ( stat == s.stat ) total_stats.add_stat( to, s.value );
-    });
   }
 
   return total_stats;
@@ -207,27 +202,6 @@ std::string item_t::weapon_stats_str() const
   s << w -> swing_time.total_seconds();
 
   return s.str();
-}
-
-std::string item_t::suffix_stats_str() const
-{
-  if ( parsed.suffix_stats.size() == 0 )
-  {
-    return std::string();
-  }
-
-  std::ostringstream s;
-
-  for ( size_t i = 0; i < parsed.suffix_stats.size(); i++ )
-  {
-    s << "+" << parsed.suffix_stats[ i ].value
-      << " " << util::stat_type_abbrev( parsed.suffix_stats[ i ].stat ) << ", ";
-  }
-
-  std::string str = s.str();
-  str.erase( str.end() - 2, str.end() );
-
-  return str;
 }
 
 std::string item_t::gem_stats_str() const
@@ -303,17 +277,9 @@ std::ostream& operator<<(std::ostream& s, const item_t& item )
     s << " slot=" << item.slot_name();
   }
   s << " quality=" << util::item_quality_string( item.parsed.data.quality );
-  if ( item.upgrade_level() > 0 )
-  {
-    s << " upgrade_level=" << item.upgrade_level();
-  }
   s << " ilevel=" << item.item_level();
   if ( item.parent_slot == SLOT_INVALID )
   {
-    if ( item.sim -> scale_to_itemlevel > 0 )
-      s << " (" << ( item.parsed.data.level + item_database::upgrade_ilevel( item, item.upgrade_level() ) ) << ")";
-    else if ( item.upgrade_level() > 0 )
-      s << " (" << item.parsed.data.level << ")";
     if ( item.parsed.drop_level > 0 )
       s << " drop_level=" << item.parsed.drop_level;
   }
@@ -359,13 +325,6 @@ std::ostream& operator<<(std::ostream& s, const item_t& item )
   {
     s << " stats={ ";
     s << item.item_stats_str();
-    s << " }";
-  }
-
-  if ( item.parsed.suffix_stats.size() > 0 )
-  {
-    s << " suffix_stats={ ";
-    s << item.suffix_stats_str();
     s << " }";
   }
 
@@ -477,24 +436,6 @@ bool item_t::has_item_stat( stat_e stat ) const
   return false;
 }
 
-// item_t::upgrade_level ====================================================
-
-unsigned item_t::upgrade_level() const
-{
-  return parsed.upgrade_level + sim -> global_item_upgrade_level;
-}
-
-unsigned item_t::upgrade_item_level() const
-{
-  // upgrade_ilevel call is expensive, thus cache it.
-  if ( cached_upgrade_item_level < 0 )
-  {
-    cached_upgrade_item_level = item_database::upgrade_ilevel( *this, upgrade_level() );
-  }
-  assert( as<unsigned>(cached_upgrade_item_level) == item_database::upgrade_ilevel( *this, upgrade_level() ) );
-  return as<unsigned>(cached_upgrade_item_level);
-}
-
 // item_t::item_level =======================================================
 
 unsigned item_t::item_level() const
@@ -513,10 +454,10 @@ unsigned item_t::item_level() const
   {
     ilvl = parsed.item_level;
   }
-  // Otherwise, normal ilevel processing (base ilevel + upgrade ilevel + artifact ilevel increase)
+  // Otherwise, normal ilevel processing (base ilevel + artifact ilevel increase)
   else
   {
-    ilvl = parsed.data.level + upgrade_item_level();
+    ilvl = parsed.data.level;
     if ( slot == player -> artifact -> slot() )
     {
       ilvl += player -> artifact -> ilevel_increase();
@@ -671,7 +612,7 @@ void item_t::parse_options()
 
   std::vector<std::unique_ptr<option_t>> options;
   options.push_back(opt_uint("id", parsed.data.id));
-  options.push_back(opt_int("upgrade", parsed.upgrade_level));
+  options.push_back(opt_obsoleted("upgrade"));
   options.push_back(opt_string("stats", option_stats_str));
   options.push_back(opt_string("gems", option_gems_str));
   options.push_back(opt_string("enchant", option_enchant_str));
@@ -685,27 +626,45 @@ void item_t::parse_options()
   options.push_back(opt_string("mythic", option_mythic_str));
   options.push_back(opt_string("type", option_armor_type_str));
   options.push_back(opt_string("reforge", DUMMY_REFORGE));
-  options.push_back(opt_int("suffix", parsed.suffix_id));
+  options.push_back(opt_deprecated("suffix", "bonus_id"));
   options.push_back(opt_string("ilevel", option_ilevel_str));
   options.push_back(opt_string("quality", option_quality_str));
   options.push_back(opt_string("source", option_data_source_str));
   options.push_back(opt_string("gem_id", option_gem_id_str));
+  options.push_back(opt_string("gem_bonus_id", option_gem_bonus_id_str));
+  options.push_back(opt_string("gem_ilevel", option_gem_ilevel_str));
   options.push_back(opt_string("enchant_id", option_enchant_id_str));
   options.push_back(opt_string("addon_id", option_addon_id_str));
   options.push_back(opt_string("bonus_id", option_bonus_id_str));
   options.push_back(opt_string("initial_cd", option_initial_cd_str));
   options.push_back(opt_string("drop_level", option_drop_level_str));
-  options.push_back(opt_string("relic_id", option_relic_id_str));
-  options.push_back(opt_string("relic_ilevel", option_relic_ilevel_str));
+  options.push_back(opt_string("relic_id", option_gem_bonus_id_str));
+  options.push_back(opt_string("relic_ilevel", option_gem_ilevel_str));
   options.push_back(opt_string("azerite_powers", option_azerite_powers_str));
   options.push_back(opt_string("azerite_level", option_azerite_level_str));
   options.push_back(opt_string("context", DUMMY_CONTEXT));
 
   try
   {
-    opts::parse( sim, option_name_str, options, remainder );
+    opts::parse( sim, option_name_str, options, remainder,
+      [ this ]( opts::parse_status status, const std::string& name, const std::string& value ) {
+        // Fail parsing if strict parsing is used and the option is not found
+        if ( sim->strict_parsing && status == opts::parse_status::NOT_FOUND )
+        {
+          return opts::parse_status::FAILURE;
+        }
+
+        // .. otherwise, just warn that there's an unknown option
+        if ( status == opts::parse_status::NOT_FOUND )
+        {
+          sim->error( "Warning: Unknown item option '{}' with value '{}' for '{}' slot '{}', ignoring",
+            name, value, player->name(), slot_name() );
+        }
+
+        return status;
+      } );
   }
-  catch ( const std::exception& e )
+  catch ( const std::exception& )
   {
     std::throw_with_nested(std::invalid_argument(fmt::format("Cannot parse option from '{}'", options_str)));
   }
@@ -738,42 +697,42 @@ void item_t::parse_options()
     }
   }
 
-  if ( ! option_relic_id_str.empty() )
+  if ( ! option_gem_bonus_id_str.empty() )
   {
-    std::vector<std::string> relic_split = util::string_split( option_relic_id_str, "/" );
-    size_t relic_slot = 0;
-    for ( const auto& relic_str : relic_split )
+    std::vector<std::string> gem_bonus_split = util::string_split( option_gem_bonus_id_str, "/" );
+    size_t gem_slot = 0;
+    for ( const auto& gem_bonus_id_str : gem_bonus_split )
     {
-      if ( relic_str == "0" )
+      if ( gem_bonus_id_str == "0" )
       {
-        relic_slot++;
+        gem_slot++;
         continue;
       }
 
-      std::vector<std::string> bonus_id_split = util::string_split( relic_str, ":" );
+      std::vector<std::string> bonus_id_split = util::string_split( gem_bonus_id_str, ":" );
       for ( const auto& bonus_id_str : bonus_id_split )
       {
-        parsed.relic_data[ relic_slot ].push_back( util::to_unsigned( bonus_id_str ) );
+        parsed.gem_bonus_id[ gem_slot ].push_back( util::to_unsigned( bonus_id_str ) );
       }
 
-      relic_slot++;
+      gem_slot++;
     }
 
   }
 
-  if ( ! option_relic_ilevel_str.empty() )
+  if ( ! option_gem_ilevel_str.empty() )
   {
-    auto split = util::string_split( option_relic_ilevel_str, "/:" );
-    auto relic_idx = 0U;
+    auto split = util::string_split( option_gem_ilevel_str, "/:" );
+    auto gem_idx = 0U;
     for ( const auto& ilevel_str : split )
     {
       auto ilevel = std::stoi( ilevel_str );
       if ( ilevel >= 0 && ilevel < MAX_ILEVEL )
       {
-        parsed.relic_ilevel[ relic_idx ] = ilevel;
+        parsed.gem_ilevel[ gem_idx ] = ilevel;
       }
 
-      ++relic_idx;
+      ++gem_idx;
     }
   }
 
@@ -821,7 +780,7 @@ void item_t::parse_options()
         parsed.bonus_id.push_back( bonus_id );
       }
     }
-    catch (const std::exception& e)
+    catch (const std::exception&)
     {
       std::throw_with_nested(std::runtime_error("Bonus ID"));
     }
@@ -906,12 +865,6 @@ std::string item_t::encoded_item() const
   if ( ! option_quality_str.empty() )
     s << ",quality=" << util::item_quality_string( parsed.data.quality );
 
-  if ( parsed.upgrade_level > 0 )
-    s << ",upgrade=" << encoded_upgrade_level();
-
-  if ( parsed.suffix_id != 0 )
-    s << ",suffix=" << encoded_random_suffix_id();
-
   if ( ! option_stats_str.empty() )
     s << ",stats=" << encoded_stats();
 
@@ -929,49 +882,66 @@ std::string item_t::encoded_item() const
       ( slot == SLOT_HEAD && player -> meta_gem != META_GEM_NONE ) ) )
     s << ",gems=" << encoded_gems();
 
-  if ( ! option_gem_id_str.empty() )
-    s << ",gem_id=" << option_gem_id_str;
-
-  // Figure out if any relics have "relic data" (relic bonus ids)
-  auto relic_data_it = range::find_if( parsed.relic_data, []( const std::vector<unsigned> v ) {
+  auto gem_bonus_it = range::find_if( parsed.gem_bonus_id, []( const std::vector<unsigned> v ) {
     return v.size() > 0;
   } );
 
-  if ( ! option_relic_id_str.empty() )
-    s << ",relic_id=" << option_relic_id_str;
-  else if ( relic_data_it != parsed.relic_data.end() )
+  auto gem_it = range::find_if( parsed.gem_id, []( int id ) {
+    return id != 0;
+  } );
+
+  if ( ! option_gem_id_str.empty() )
+    s << ",gem_id=" << option_gem_id_str;
+  else if ( gem_it != parsed.gem_id.end() && parsed.gem_stats.size() == 0 )
   {
-    s << ",relic_id=";
-    for ( size_t relic_idx = 0; relic_idx < parsed.relic_data.size(); ++relic_idx )
+    s << ",gem_id=";
+    for ( size_t i = 0; i < parsed.gem_id.size(); ++i )
     {
-      const auto& relic_data = parsed.relic_data[ relic_idx ];
-      if ( relic_data.size() == 0 )
+      s << parsed.gem_id[ i ];
+      if ( i < parsed.gem_id.size() - 1 )
+      {
+        s << '/';
+      }
+    }
+  }
+
+  if ( !option_gem_bonus_id_str.empty() )
+  {
+    s << ",gem_bonus_id=" << option_gem_bonus_id_str;
+  }
+  else if ( gem_bonus_it != parsed.gem_bonus_id.end() )
+  {
+    s << ",gem_bonus_id=";
+    for ( size_t gem_idx = 0; gem_idx < parsed.gem_bonus_id.size(); ++gem_idx )
+    {
+      const auto& gem_data = parsed.gem_bonus_id[ gem_idx ];
+      if ( gem_data.size() == 0 )
       {
         s << "0";
       }
       else
       {
-        for ( size_t relic_bonus_idx = 0; relic_bonus_idx < relic_data.size(); ++relic_bonus_idx )
+        for ( size_t gem_bonus_idx = 0; gem_bonus_idx < gem_data.size(); ++gem_bonus_idx )
         {
-          s << relic_data[ relic_bonus_idx ];
+          s << gem_data[ gem_bonus_idx ];
 
-          if ( relic_bonus_idx < relic_data.size() - 1 )
+          if ( gem_bonus_idx < gem_data.size() - 1 )
           {
             s << ":";
           }
         }
       }
 
-      if ( relic_idx < parsed.relic_data.size() - 1 )
+      if ( gem_idx < parsed.gem_bonus_id.size() - 1 )
       {
         s << "/";
       }
     }
   }
 
-  if ( ! option_relic_ilevel_str.empty() )
+  if ( !option_gem_ilevel_str.empty() )
   {
-    s << ",relic_ilevel=" << option_relic_ilevel_str;
+    s << ",gem_ilevel=" << option_gem_ilevel_str;
   }
 
   if ( ! option_azerite_powers_str.empty() )
@@ -1015,6 +985,10 @@ std::string item_t::encoded_item() const
 
   if ( ! option_drop_level_str.empty() )
     s << ",drop_level=" << option_drop_level_str;
+  else if ( parsed.drop_level > 0 )
+  {
+    s << ",drop_level=" << parsed.drop_level;
+  }
 
   return s.str();
 }
@@ -1149,29 +1123,6 @@ std::string item_t::encoded_addon() const
   return stat_pairs_to_str( parsed.addon_stats );
 }
 
-// item_t::encoded_upgrade_level ============================================
-
-std::string item_t::encoded_upgrade_level() const
-{
-  std::string upgrade_level_str;
-  if ( parsed.upgrade_level > 0 )
-    upgrade_level_str = util::to_string( parsed.upgrade_level );
-
-  return upgrade_level_str;
-}
-
-// item_t::encoded_random_suffix_id =========================================
-
-std::string item_t::encoded_random_suffix_id() const
-{
-  std::string str;
-
-  if ( parsed.suffix_id != 0 )
-    str += util::to_string( parsed.suffix_id );
-
-  return str;
-}
-
 // item_t::encoded_stats ====================================================
 
 std::string item_t::encoded_stats() const
@@ -1304,19 +1255,12 @@ void item_t::init()
   decode_ilevel();
   decode_armor_type();
 
-  if ( parsed.upgrade_level > 0 && ( ! parsed.data.quality || ( ! parsed.data.level && ! parsed.item_level ) ) )
-  {
-    sim -> errorf( "Player %s upgrading item %s at slot %s without quality or ilevel, upgrading will not work\n",
-                   player -> name(), name(), slot_name() );
-  }
-
   // Process complex input, and initialize item in earnest
 
   // Gems need to be processed first, because in Legion, they may affect the item level of the item
   decode_gems();
   decode_stats();
   decode_weapon();
-  decode_random_suffix();
   decode_equip_effect();
   decode_use_effect();
   decode_enchant();
@@ -1505,125 +1449,6 @@ void item_t::decode_stats()
   }
 }
 
-// item_t::decode_random_suffix =============================================
-
-void item_t::decode_random_suffix()
-{
-  // Ignore all old style random suffixes (negative suffix id)
-  if ( parsed.suffix_id <= 0 )
-    return;
-
-  // We need the ilevel/quality data, otherwise we cannot figure out
-  // the random suffix point allocation.
-  if ( item_level() == 0 || parsed.data.quality == 0 )
-  {
-    throw std::invalid_argument("Random suffix requires both ilevel= and quality= information.");
-  }
-
-  // These stats will be automatically at the correct upgrade level, as the
-  // item budget is selected by the total ilevel of the item.
-  const random_prop_data_t& ilevel_data   = player -> dbc.random_property( item_level() );
-  const random_suffix_data_t& suffix_data = player -> dbc.random_suffix( abs( parsed.suffix_id ) );
-
-  if ( ! suffix_data.id )
-  {
-    throw std::invalid_argument(fmt::format("Unknown random suffix id {}.", parsed.suffix_id ));
-  }
-
-  int f = item_database::random_suffix_type( *this );
-
-  if ( sim -> debug )
-  {
-    sim -> out_debug.printf( "random_suffix: item=%s parsed.suffix_id=%d ilevel=%d quality=%d random_point_pool=%d",
-                   name(), parsed.suffix_id, item_level(), parsed.data.quality, f );
-  }
-
-  for ( size_t i = 0; i < sizeof_array( suffix_data.enchant_id ); i++ )
-  {
-    unsigned enchant_id;
-    if ( ! ( enchant_id = suffix_data.enchant_id[ i ] ) )
-      continue;
-
-    const item_enchantment_data_t& enchant_data = player -> dbc.item_enchantment( enchant_id );
-
-    if ( ! enchant_data.id )
-      continue;
-
-    // Calculate amount of points
-    double stat_amount;
-    if ( parsed.data.quality == 4 ) // Epic
-      stat_amount = ilevel_data.p_epic[ f ] * suffix_data.enchant_alloc[ i ] / 10000.0;
-    else if ( parsed.data.quality == 3 ) // Rare
-      stat_amount = ilevel_data.p_rare[ f ] * suffix_data.enchant_alloc[ i ] / 10000.0;
-    else if ( parsed.data.quality == 2 ) // Uncommon
-      stat_amount = ilevel_data.p_uncommon[ f ] * suffix_data.enchant_alloc[ i ] / 10000.0;
-    else // Impossible choices, so bogus data, skip
-      continue;
-
-    // Loop through enchantment stats, adding valid ones to the stats of the item.
-    // Typically (and for cata random suffixes), there seems to be only one stat per enchantment
-    for ( size_t j = 0; j < sizeof_array( enchant_data.ench_type ); j++ )
-    {
-      stat_pair_t stat( STAT_NONE, -1 );
-
-      if ( enchant_data.ench_type[ j ] == ITEM_ENCHANTMENT_STAT )
-      {
-        stat = item_database::item_enchantment_effect_stats( enchant_data, as<int>( j ) );
-      }
-      else if ( enchant_data.ench_type[ j ] == ITEM_ENCHANTMENT_RESISTANCE )
-      {
-        stat = stat_pair_t( STAT_BONUS_ARMOR, static_cast<int>( j ) );
-      }
-
-      if ( stat.stat == STAT_NONE )
-        continue;
-
-      bool has_stat = false;
-      size_t free_idx = 0;
-
-      for ( size_t k = 0; k < sizeof_array( parsed.data.stat_type_e ); k++ )
-      {
-        if ( parsed.data.stat_type_e[ k ] == ( int ) enchant_data.ench_prop[ j ] )
-          has_stat = true;
-
-        if ( parsed.data.stat_type_e[ k ] <= 0 )
-        {
-          free_idx = k;
-          break;
-        }
-      }
-
-      if ( has_stat == true )
-      {
-        if ( sim -> debug )
-          sim -> out_debug.printf( "random_suffix: Player %s item %s attempted to add base stat %u %s (%d) twice, due to random suffix.",
-                         player -> name(), name(), as<unsigned>( j ), util::stat_type_abbrev( stat.stat ), enchant_data.ench_type[ j ] );
-        continue;
-      }
-
-      if ( sim -> debug )
-        sim -> out_debug.printf( "random_suffix: stat=%d (%s) stat_amount=%f", stat.stat, util::stat_type_abbrev( stat.stat ), stat_amount );
-
-      stat.value = static_cast<int>( stat_amount );
-      parsed.suffix_stats.push_back( stat );
-      base_stats.add_stat( stat.stat, static_cast< int >( stat_amount ) );
-      stats.add_stat( stat.stat, static_cast< int >( stat_amount ) );
-      free_idx++;
-    }
-  }
-
-  if ( suffix_data.suffix )
-  {
-    std::string str = suffix_data.suffix;
-    util::tokenize( str );
-
-    if ( name_str.find( str ) == std::string::npos )
-    {
-      name_str += '_' + str;
-    }
-  }
-}
-
 // item_t::decode_gems ======================================================
 
 void item_t::decode_gems()
@@ -1691,10 +1516,10 @@ void item_t::decode_gems()
       {
         throw std::invalid_argument(fmt::format("Invalid stat '{}'.", t.name));
       }
-      parsed.gem_stats.push_back( stat_pair_t( s, static_cast<int>( t.value ) ) );
+      parsed.gem_stats.emplace_back( s, static_cast<int>( t.value ) );
     }
   }
-  catch (const std::exception& e)
+  catch (const std::exception&)
   {
     std::throw_with_nested( std::invalid_argument(
           fmt::format( "Error decoding gems from '{}'", option_gems_str ) ) ) ;
@@ -1734,7 +1559,7 @@ void item_t::decode_equip_effect()
 
     parsed.special_effects.push_back( new special_effect_t( effect ) );
   }
-  catch (const std::exception& e)
+  catch (const std::exception&)
   {
     std::throw_with_nested(std::invalid_argument(fmt::format("Error decoding equip='{}'", option_equip_str )));
   }
@@ -1967,7 +1792,7 @@ std::vector<stat_pair_t> item_t::str_to_stat_pair( const std::string& stat_str )
   {
     stat_e s = STAT_NONE;
     if ( ( s = util::parse_stat_type( t.name ) ) != STAT_NONE && t.value != 0 )
-      stats.push_back( stat_pair_t( s, static_cast<int>( t.value ) ) );
+      stats.emplace_back( s, static_cast<int>( t.value ) );
   }
 
   return stats;

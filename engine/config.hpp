@@ -21,6 +21,7 @@
 #  define SC_WINDOWS
 #  define WIN32_LEAN_AND_MEAN
 #  define VC_EXTRALEAN
+#  define NOMINMAX
 #  ifndef _CRT_SECURE_NO_WARNINGS
 #    define _CRT_SECURE_NO_WARNINGS
 #  endif
@@ -57,15 +58,16 @@
 #  error "Visual Studio 12 ( 2013 ) or lower not supported"
 #endif
 
-// Last updated 2017-11-07: Support gcc4.8 with full C++11 support for now
-// Debian 8 (Jessie) with gcc 4.9 and clang3.5
+// Last updated 2017-11-07: Support gcc4.8 with partial C++14 support for now
+// Debian 8 (Jessie) (EOL 2018-06-17, LTS EOL 2020-06-30)with gcc 4.9 and clang3.5
 // Ubuntu 16.04: gcc 5.3, clang3.8
-// Debian 9 (Stretch): gcc 6.3 clang 3.8
+// Debian 9 (Stretch) (EOL ~2020, LTS EOL ~2020): gcc 6.3 clang 3.8
+// Ubuntu 18.04: gcc 7.3 clang 6.0
 #if defined( SC_CLANG ) && SC_CLANG < 30500
 #  error "clang++ below version 3.5 not supported"
 #endif
-#if defined( SC_GCC ) && SC_GCC < 40800
-#  error "g++ below version 4.8 not supported"
+#if defined( SC_GCC ) && SC_GCC < 50000
+#  error "g++ below version 5 not supported"
 #endif
 
 

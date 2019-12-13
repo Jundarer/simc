@@ -69,6 +69,9 @@ set_bonus_t::set_bonus_t( player_t* player ) :
 // Initialize set bonus counts based on the items of the actor
 void set_bonus_t::initialize_items()
 {
+  // Don't allow 2 worn items of the same id to count as 2 slots
+  std::vector<unsigned> item_ids;
+
   for ( auto& item : actor -> items)
   {
     if ( item.parsed.data.id == 0 )
@@ -86,8 +89,14 @@ void set_bonus_t::initialize_items()
       if ( bonus.class_id != -1 && ! bonus.has_spec( static_cast< int >( actor -> _spec ) ) )
         continue;
 
+      if ( range::find( item_ids, item.parsed.data.id ) != item_ids.end() )
+      {
+        continue;
+      }
+
       // T17+ and PVP is spec specific, T16 and lower is "role specific"
       set_bonus_spec_count[ bonus.enum_id ][ specdata::spec_idx( actor -> _spec ) ]++;
+      item_ids.push_back( item.parsed.data.id );
       break;
     }
   }
@@ -278,7 +287,7 @@ std::string set_bonus_t::to_profile_string( const std::string& newline ) const
   return s;
 }
 
-expr_t* set_bonus_t::create_expression( const player_t* , const std::string& type )
+std::unique_ptr<expr_t> set_bonus_t::create_expression( const player_t* , const std::string& type )
 {
   set_bonus_type_e set_bonus = SET_BONUS_NONE;
   set_bonus_e bonus = B_NONE;

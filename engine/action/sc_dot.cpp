@@ -5,60 +5,6 @@
 
 #include "simulationcraft.hpp"
 
-namespace {
-
-bool do_find_higher_priority_action( const action_priority_list_t::parent_t& parent )
-{
-  auto apl = std::get<0>( parent );
-  auto idx = std::get<1>( parent );
-
-  for ( size_t i = 0; i < apl -> foreground_action_list.size() && i < idx; ++i )
-  {
-    auto a = apl -> foreground_action_list[ i ];
-
-    if ( a -> action_ready() )
-    {
-      return true;
-    }
-  }
-
-  return range::find_if( apl -> parents, []( const action_priority_list_t::parent_t& p ) {
-    return do_find_higher_priority_action( p );
-  } ) != apl -> parents.end();
-}
-
-bool do_find_higher_priority_action( action_t* ca )
-{
-  auto apl = ca -> action_list;
-
-  for ( action_t* a : apl -> foreground_action_list )
-  {
-    if ( a == ca )
-    {
-      break;
-    }
-    // FIXME Why not interrupt a channel for the same spell higher up the action
-    // list?
-    // if ( a -> id == current_action -> id ) continue;
-    if ( a -> action_ready() )
-    {
-      return true;
-    }
-  }
-
-  if ( ca -> interrupt_global )
-  {
-    return range::find_if( apl -> parents, []( const action_priority_list_t::parent_t& p ) {
-      return do_find_higher_priority_action( p );
-    } ) != apl -> parents.end();
-  }
-  else
-  {
-    return false;
-  }
-}
-
-}
 // ==========================================================================
 // Dot
 // ==========================================================================
@@ -115,7 +61,7 @@ void dot_t::extend_duration( timespan_t extra_seconds,
   assert( state );
   current_action->snapshot_internal(
       state, state_flags,
-      current_action->type == ACTION_HEAL ? HEAL_OVER_TIME : DMG_OVER_TIME );
+      current_action->type == ACTION_HEAL ? result_amount_type::HEAL_OVER_TIME : result_amount_type::DMG_OVER_TIME );
 
   if ( max_total_time > timespan_t::zero() )
   {
@@ -162,7 +108,7 @@ void dot_t::reduce_duration( timespan_t remove_seconds, uint32_t state_flags )
   assert( state );
   current_action->snapshot_internal(
       state, state_flags,
-      current_action->type == ACTION_HEAL ? HEAL_OVER_TIME : DMG_OVER_TIME );
+      current_action->type == ACTION_HEAL ? result_amount_type::HEAL_OVER_TIME : result_amount_type::DMG_OVER_TIME );
 
   if ( remove_seconds >= remains() )
   {
@@ -216,9 +162,9 @@ void dot_t::refresh_duration( uint32_t state_flags )
 
   current_action->snapshot_internal(
       state, state_flags,
-      current_action->type == ACTION_HEAL ? HEAL_OVER_TIME : DMG_OVER_TIME );
+      current_action->type == ACTION_HEAL ? result_amount_type::HEAL_OVER_TIME : result_amount_type::DMG_OVER_TIME );
 
-  refresh( current_action->dot_duration );
+  refresh( current_action->composite_dot_duration( state ) );
 
   current_action->stats->add_refresh( state->target );
 }
@@ -302,7 +248,7 @@ void dot_t::increment(int stacks = 1)
     stack += stacks;
 
     if (sim.debug)
-      sim.out_debug.printf("dot %s decremented by %d to %d stacks",
+      sim.out_debug.printf("dot %s incremented by %d to %d stacks",
         name_str.c_str(), stacks, stack);
   }
 }
@@ -538,7 +484,7 @@ void dot_t::copy( dot_t* other_dot ) const
 
 // dot_t::create_expression =================================================
 
-expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source_action,
+std::unique_ptr<expr_t> dot_t::create_expression( dot_t* dot, action_t* action, action_t* source_action,
                                   const std::string& name_str, bool dynamic )
 {
   if (!dynamic)
@@ -596,12 +542,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_ticks", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->current_tick;
       }
     };
-    return new ticks_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<ticks_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "extended_time" )
   {
@@ -611,12 +557,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "extended_time", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->extended_time.total_seconds();
       }
     };
-    return new extended_time_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<extended_time_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "duration" )
   {
@@ -627,7 +573,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_duration", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         dot_t* dot = this->dot();
         if ( !dot->state )
@@ -637,7 +583,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
             .total_seconds();
       }
     };
-    return new duration_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<duration_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "refreshable" )
   {
@@ -652,7 +598,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
 
       // Don't recycle the event here, since initialization order can break
       // things
-      ~refresh_expr_t()
+      ~refresh_expr_t() override
       {
         delete state;
       }
@@ -672,7 +618,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
           state = d->current_action->get_state();
         }
 
-        d->current_action->snapshot_state( state, DMG_OVER_TIME );
+        d->current_action->snapshot_state( state, result_amount_type::DMG_OVER_TIME );
         timespan_t new_duration =
             d->current_action->composite_dot_duration( state );
 
@@ -680,7 +626,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
       }
     };
 
-    return new refresh_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<refresh_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "remains" )
   {
@@ -690,25 +636,25 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_remains", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->remains().total_seconds();
       }
     };
-    return new remains_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<remains_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "tick_dmg" )
   {
-    struct tick_dmg_expr_t : public dot_expr_t
+    struct tick_result_amount_typexpr_t : public dot_expr_t
     {
       action_state_t* s;
 
-      tick_dmg_expr_t( dot_t* d, action_t* a, action_t* sa, bool dynamic )
+      tick_result_amount_typexpr_t( dot_t* d, action_t* a, action_t* sa, bool dynamic )
         : dot_expr_t( "dot_tick_dmg", d, a, sa, dynamic ), s( nullptr )
       {
       }
 
-      virtual double evaluate() override
+      double evaluate() override
       {
         if ( dot()->state )
         {
@@ -723,25 +669,25 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         return 0.0;
       }
 
-      virtual ~tick_dmg_expr_t()
+      ~tick_result_amount_typexpr_t() override
       {
         delete s;
       }
     };
-    return new tick_dmg_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<tick_result_amount_typexpr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "crit_dmg" )
   {
-    struct crit_dmg_expr_t : public dot_expr_t
+    struct crit_result_amount_typexpr_t : public dot_expr_t
     {
       action_state_t* s;
 
-      crit_dmg_expr_t( dot_t* d, action_t* a, action_t* sa, bool dynamic )
+      crit_result_amount_typexpr_t( dot_t* d, action_t* a, action_t* sa, bool dynamic )
         : dot_expr_t( "dot_crit_dmg", d, a, sa, dynamic ), s( nullptr )
       {
       }
 
-      virtual double evaluate() override
+      double evaluate() override
       {
         if ( dot()->state )
         {
@@ -756,7 +702,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         return 0.0;
       }
     };
-    return new crit_dmg_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<crit_result_amount_typexpr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "tick_time_remains" )
   {
@@ -766,14 +712,14 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_tick_time_remain", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->is_ticking()
                    ? dot()->tick_event->remains().total_seconds()
                    : 0;
       }
     };
-    return new tick_time_remain_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<tick_time_remain_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "ticks_remain" )
   {
@@ -783,12 +729,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_ticks_remain", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->ticks_left();
       }
     };
-    return new ticks_remain_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<ticks_remain_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "ticks_remain_fractional" )
   {
@@ -798,7 +744,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t("dot_ticks_remain_fractional", d, a, sa, dynamic)
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         dot_t* dt = dot();
 
@@ -810,7 +756,7 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         return dt->remains() / dt->current_action->tick_time(dt->state);
       }
     };
-    return new ticks_remain_fractional_expr_t(dot, action, source_action, dynamic);
+    return std::make_unique<ticks_remain_fractional_expr_t>(dot, action, source_action, dynamic);
   }
   else if ( name_str == "ticking" )
   {
@@ -820,12 +766,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_ticking", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->ticking;
       }
     };
-    return new ticking_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<ticking_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "spell_power" )
   {
@@ -835,12 +781,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_spell_power", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->state ? dot()->state->composite_spell_power() : 0;
       }
     };
-    return new dot_spell_power_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_spell_power_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "attack_power" )
   {
@@ -850,12 +796,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_attack_power", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->state ? dot()->state->composite_attack_power() : 0;
       }
     };
-    return new dot_attack_power_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_attack_power_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "multiplier" )
   {
@@ -865,12 +811,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_multiplier", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->state ? dot()->state->ta_multiplier : 0;
       }
     };
-    return new dot_multiplier_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_multiplier_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "pmultiplier" )
   {
@@ -880,27 +826,13 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_pmultiplier", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->state ? dot()->state->persistent_multiplier : 0;
       }
     };
-    return new dot_pmultiplier_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_pmultiplier_expr_t>( dot, action, source_action, dynamic );
   }
-
-#if 0
-  else if ( name_str == "mastery" )
-  {
-    struct dot_mastery_expr_t : public dot_expr_t
-    {
-      dot_mastery_expr_t( dot_t* d, action_t* a, bool dynamic ) :
-        dot_expr_t( "dot_mastery", d, a, dynamic ) {}
-      virtual double evaluate() { return dot() -> state ? dot() -> state -> total_mastery() : 0; }
-    };
-    return new dot_mastery_expr_t( dot, current_action, dynamic );
-  }
-#endif
-
   else if ( name_str == "haste_pct" )
   {
     struct dot_haste_pct_expr_t : public dot_expr_t
@@ -909,12 +841,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_haste_pct", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->state ? ( 1.0 / dot()->state->haste - 1.0 ) * 100 : 0;
       }
     };
-    return new dot_haste_pct_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_haste_pct_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "current_ticks" )
   {
@@ -924,12 +856,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_current_ticks", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->num_ticks;
       }
     };
-    return new current_ticks_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<current_ticks_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "crit_pct" )
   {
@@ -939,12 +871,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_crit_pct", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->state ? dot()->state->crit_chance * 100.0 : 0;
       }
     };
-    return new dot_crit_pct_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_crit_pct_expr_t>( dot, action, source_action, dynamic );
   }
   else if ( name_str == "stack" )
   {
@@ -954,12 +886,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t( "dot_stack", d, a, sa, dynamic )
       {
       }
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->current_stack();
       }
     };
-    return new dot_stack_expr_t( dot, action, source_action, dynamic );
+    return std::make_unique<dot_stack_expr_t>( dot, action, source_action, dynamic );
   }
   else if (name_str == "max_stacks")
   {
@@ -969,12 +901,12 @@ expr_t* dot_t::create_expression( dot_t* dot, action_t* action, action_t* source
         : dot_expr_t("dot_max_stacks", d, a, sa, dynamic)
       {}
 
-      virtual double evaluate() override
+      double evaluate() override
       {
         return dot()->max_stack;
       }
     };
-    return new max_stack_expr_t(dot, action, source_action, dynamic);
+    return std::make_unique<max_stack_expr_t>(dot, action, source_action, dynamic);
   }
 
 
@@ -1015,8 +947,13 @@ int dot_t::ticks_left() const
     return 0;
   if ( !ticking )
     return 0;
+
+  // If no tick_event is scheduled but the dot is ticking, ticks_left() was called
+  // during tick(). In that case, include the currently processed tick.
+  timespan_t next_tick = tick_event ? tick_event->remains() : 0_ms;
+
   return static_cast<int>(
-      std::ceil( remains() / current_action->tick_time( state ) ) );
+    1 + std::ceil( ( remains() - next_tick ) / current_action->tick_time( state ) ) );
 }
 
 /* Called on Dot start if dot action has tick_zero = true set.
@@ -1042,7 +979,7 @@ bool dot_t::channel_interrupt()
     bool interrupt = current_action->option.interrupt;
     if ( !interrupt )
     {
-      expr_t* expr = current_action->interrupt_if_expr;
+      auto&& expr = current_action->interrupt_if_expr;
       if ( expr )
       {
         interrupt = expr->success();
@@ -1084,7 +1021,7 @@ void dot_t::tick()
   {
     // If the ability has an interrupt or chain-based option enabled, we need to dynamically regen
     // resources for the actor before the chain/interrupt processing is done.
-    if ( current_action->player->regen_type == REGEN_DYNAMIC &&
+    if ( current_action->player->resource_regeneration == regen_type::DYNAMIC&&
          ( current_action->option.chain || current_action->option.interrupt ||
            current_action->interrupt_if_expr || current_action->early_chain_if_expr ) )
     {
@@ -1164,11 +1101,23 @@ void dot_t::schedule_tick()
 
   if ( current_action->channeled )
   {
+    if ( current_action->cancel_if_expr && current_action->cancel_if_expr->success() )
+    {
+      if ( current_action->sim->debug )
+      {
+        current_action->sim->out_debug.print( "{} '{}' cancel_if returns {}, cancelling channel",
+          current_action->player->name(), current_action->signature_str,
+          current_action->cancel_if_expr->eval() );
+      }
+      cancel();
+      return;
+    }
+
     // FIXME: Find some way to make this more realistic - the actor shouldn't
     // have to recast quite this early
     // Response: "Have to"?  It might be good to recast early - since the GCD
     // will end sooner. Depends on the situation. -ersimont
-    expr_t* expr = current_action->early_chain_if_expr;
+    auto&& expr = current_action->early_chain_if_expr;
     if ( ( ( current_action->option.chain && current_tick + 1 == num_ticks ) ||
            ( current_tick > 0 && expr && expr->success() &&
              current_action->player->gcd_ready <= sim.current_time() ) ) &&
@@ -1179,11 +1128,13 @@ void dot_t::schedule_tick()
       current_action->player->channeling = nullptr;
       current_action->player->gcd_ready =
           sim.current_time() + current_action->gcd();
+      current_action->set_target( target );
       current_action->execute();
       if ( current_action->result_is_hit(
                current_action->execute_state->result ) )
       {
         current_action->player->channeling = current_action;
+        current_action->player->schedule_cwc_ready( timespan_t::zero() );
       }
       else
         cancel();
@@ -1213,7 +1164,7 @@ void dot_t::start( timespan_t duration )
   state->original_x = target->x_position;
   state->original_y = target->y_position;
 
-  check_tick_zero();
+  check_tick_zero( true );
 
   schedule_tick();
 
@@ -1248,7 +1199,7 @@ void dot_t::refresh( timespan_t duration )
   event_t::cancel( end_event );
   end_event = make_event<dot_end_event_t>( sim, this, current_duration );
 
-  check_tick_zero();
+  check_tick_zero( false );
 
   recalculate_num_ticks();
 
@@ -1295,7 +1246,8 @@ void dot_t::recalculate_num_ticks()
       current_tick +
       as<int>( std::ceil( remains() / current_action->tick_time( state ) ) );
 }
-void dot_t::check_tick_zero()
+
+void dot_t::check_tick_zero( bool start )
 {
   // If we're precasting a helpful dot and we're not in combat, fake precasting
   // by using a first tick.
@@ -1304,12 +1256,15 @@ void dot_t::check_tick_zero()
   bool fake_first_tick =
       !current_action->harmful && !current_action->player->in_combat;
 
-  if ( current_action->tick_zero || fake_first_tick )
+  if ( ( current_action->tick_zero || ( current_action->tick_on_application && start ) ) ||
+       fake_first_tick )
   {
     timespan_t previous_ttt = time_to_tick;
     time_to_tick            = timespan_t::zero();
     // Recalculate num_ticks:
+#ifndef NDEBUG
     timespan_t tick_time = current_action->tick_time( state );
+#endif
     assert( tick_time > timespan_t::zero() &&
             "A Dot needs a positive tick time!" );
     recalculate_num_ticks();
@@ -1327,7 +1282,17 @@ bool dot_t::is_higher_priority_action_available() const
 {
   assert( current_action->action_list );
 
-  return do_find_higher_priority_action( current_action );
+  auto player = current_action->player;
+  auto apl = current_action->interrupt_global ? player->active_action_list : current_action->action_list;
+
+  player->visited_apls_ = 0;
+  auto action = player->select_action( *apl, execute_type::FOREGROUND, current_action );
+  if ( action && action->internal_id != current_action->internal_id && player->sim->debug )
+  {
+    player->sim->out_debug.print( "{} action available for context {}: {}", player->name(),
+      current_action->signature_str, action->signature_str );
+  }
+  return action != nullptr && action->internal_id != current_action->internal_id;
 }
 
 void dot_t::adjust( double coefficient )

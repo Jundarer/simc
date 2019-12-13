@@ -1,5 +1,6 @@
 optimal_raid=1
 default_actions=1
+bfa.reorigination_array_stacks=10
 
 T22_Death_Knight_Blood.simc
 T22_Death_Knight_Frost.simc
@@ -29,7 +30,7 @@ T22_Paladin_Retribution.simc
 T22_Priest_Holy.simc
 T22_Priest_Shadow.simc
 
-T22_Rogue_Assassination_Exsg.simc
+T22_Rogue_Assassination.simc
 T22_Rogue_Outlaw.simc
 T22_Rogue_Subtlety.simc
 
@@ -42,3 +43,4 @@ T22_Warlock_Destruction.simc
 
 T22_Warrior_Arms.simc
 T22_Warrior_Fury.simc
+T22_Warrior_Protection.simc

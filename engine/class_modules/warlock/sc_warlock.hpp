@@ -26,7 +26,6 @@ namespace warlock
 
       propagate_const<buff_t*> debuffs_haunt;
       propagate_const<buff_t*> debuffs_shadow_embrace;
-      propagate_const<buff_t*> debuffs_tormented_agony;
 
       //Destro
       propagate_const<dot_t*> dots_immolate;
@@ -62,9 +61,15 @@ namespace warlock
     struct warlock_t : public player_t
     {
     public:
-      player_t * havoc_target;
+      player_t* havoc_target;
+      std::vector<action_t*> havoc_spells;  // Used for smarter target cache invalidation.
       bool wracking_brilliance;
       double agony_accumulator;
+      double memory_of_lucid_dreams_accumulator; // Memory of Lucid Dreams Azerite Essence tracking.
+      double strive_for_perfection_multiplier;
+      double vision_of_perfection_multiplier;
+      std::vector<event_t*> wild_imp_spawns; // Used for tracking incoming imps from HoG 
+      double flashpoint_threshold; //Flashpoint (Destruction Azerite trait) does not have the 80% in spell data
 
       unsigned active_pets;
 
@@ -77,8 +82,10 @@ namespace warlock
         static const int DARKGLARE_LIMIT = 1;
 
         std::array<pets::destruction::infernal_t*, INFERNAL_LIMIT> infernals;
+        spawner::pet_spawner_t<pets::destruction::infernal_t, warlock_t> vop_infernals; //Infernal(s) summoned by Vision of Perfection
 
         std::array<pets::affliction::darkglare_t*, DARKGLARE_LIMIT> darkglare;
+        spawner::pet_spawner_t<pets::affliction::darkglare_t, warlock_t> vop_darkglares; //Darkglare(s) summoned by Vision of Perfection
 
         spawner::pet_spawner_t<pets::demonology::dreadstalker_t, warlock_t> dreadstalkers;
         spawner::pet_spawner_t<pets::demonology::vilefiend_t, warlock_t> vilefiends;
@@ -105,9 +112,8 @@ namespace warlock
       struct active_t
       {
         action_t* grimoire_of_sacrifice_proc;
-        action_t* cry_havoc;
-        action_t* tormented_agony;
         action_t* chaotic_flames;
+        spell_t* pandemic_invocation;
         spell_t* corruption;
         spell_t* roaring_blaze;
         spell_t* internal_combustion;
@@ -202,12 +208,11 @@ namespace warlock
 
         //Demo
         azerite_power_t demonic_meteor;
-        azerite_power_t forbidden_knowledge;
-        //azerite_power_t meteoric_flare; //no current data
         azerite_power_t shadows_bite;
         azerite_power_t supreme_commander;
         azerite_power_t umbral_blaze;
         azerite_power_t explosive_potential;
+        azerite_power_t baleful_invocation;
 
         //Aff
         azerite_power_t cascading_calamity;
@@ -215,16 +220,21 @@ namespace warlock
         azerite_power_t inevitable_demise;
         azerite_power_t sudden_onset;
         azerite_power_t wracking_brilliance;
-        azerite_power_t deathbloom;
+        azerite_power_t pandemic_invocation;
 
         //Destro
-        azerite_power_t accelerant;
         azerite_power_t bursting_flare;
         azerite_power_t chaotic_inferno;
         azerite_power_t crashing_chaos;
         azerite_power_t rolling_havoc;
         azerite_power_t flashpoint;
+        azerite_power_t chaos_shards;
       } azerite;
+
+      struct {
+        azerite_essence_t memory_of_lucid_dreams;  // Memory of Lucid Dreams minor
+        azerite_essence_t vision_of_perfection;
+      } azerite_essence;
 
       // Mastery Spells
       struct mastery_spells_t
@@ -235,7 +245,6 @@ namespace warlock
       } mastery_spells;
 
       //Procs and RNG
-      propagate_const<real_ppm_t*> affliction_t20_2pc_rppm;
       propagate_const<real_ppm_t*> grimoire_of_sacrifice_rppm; // grimoire of sacrifice
 
       // Cooldowns
@@ -262,11 +271,9 @@ namespace warlock
         const spell_data_t* affliction;
         const spell_data_t* nightfall;
         const spell_data_t* unstable_affliction;
-        const spell_data_t* unstable_affliction_2;
         const spell_data_t* agony;
         const spell_data_t* agony_2;
         const spell_data_t* shadow_bite;
-        const spell_data_t* shadow_bite_2;
         const spell_data_t* shadow_bolt; // also demo
         const spell_data_t* summon_darkglare;
 
@@ -280,12 +287,10 @@ namespace warlock
         const spell_data_t* destruction;
         const spell_data_t* immolate;
         const spell_data_t* conflagrate;
-        const spell_data_t* conflagrate_2;
+        const spell_data_t* conflagrate_2; // Conflagrate has 2 charges
         const spell_data_t* havoc;
         const spell_data_t* unending_resolve;
-        const spell_data_t* unending_resolve_2;
         const spell_data_t* firebolt;
-        const spell_data_t* firebolt_2;
       } spec;
 
       // Buffs
@@ -296,9 +301,9 @@ namespace warlock
 
         //affliction buffs
         propagate_const<buff_t*> active_uas;
+        propagate_const<buff_t*> drain_life;
         propagate_const<buff_t*> nightfall;
         propagate_const<buff_t*> dark_soul_misery;
-        propagate_const<buff_t*> demonic_speed; // t20 4pc
 
         propagate_const<buff_t*> cascading_calamity;
         propagate_const<buff_t*> inevitable_demise;
@@ -309,8 +314,6 @@ namespace warlock
         propagate_const<buff_t*> demonic_calling;
         propagate_const<buff_t*> inner_demons;
         propagate_const<buff_t*> nether_portal;
-        propagate_const<buff_t*> dreaded_haste; // t20 4pc
-        propagate_const<buff_t*> rage_of_guldan; // t21 2pc
         propagate_const<buff_t*> wild_imps;
         propagate_const<buff_t*> dreadstalkers;
         propagate_const<buff_t*> vilefiend;
@@ -320,24 +323,24 @@ namespace warlock
         propagate_const<buff_t*> prince_malchezaar;
         propagate_const<buff_t*> eyes_of_guldan;
 
-        propagate_const<buff_t*> forbidden_knowledge;
         propagate_const<buff_t*> shadows_bite;
         propagate_const<buff_t*> supreme_commander;
         propagate_const<buff_t*> explosive_potential;
 
         //destruction_buffs
         propagate_const<buff_t*> backdraft;
-        propagate_const<buff_t*> active_havoc;
         propagate_const<buff_t*> reverse_entropy;
+        propagate_const<buff_t*> grimoire_of_supremacy_driver;
         propagate_const<buff_t*> grimoire_of_supremacy;
         propagate_const<buff_t*> dark_soul_instability;
 
-        propagate_const<buff_t*> accelerant;
         propagate_const<buff_t*> bursting_flare;
         propagate_const<buff_t*> chaotic_inferno;
         propagate_const<buff_t*> crashing_chaos;
+        propagate_const<buff_t*> crashing_chaos_vop;
         propagate_const<buff_t*> rolling_havoc;
         propagate_const<buff_t*> flashpoint;
+        propagate_const<buff_t*> chaos_shards;
       } buffs;
 
       // Gains
@@ -349,31 +352,30 @@ namespace warlock
         gain_t* drain_soul;
         gain_t* seed_of_corruption;
         gain_t* unstable_affliction_refund;
+        gain_t* pandemic_invocation;
 
         gain_t* conflagrate;
         gain_t* shadowburn;
         gain_t* incinerate;
         gain_t* incinerate_crits;
-        gain_t* fnb_bits;
+        gain_t* incinerate_fnb;
+        gain_t* incinerate_fnb_crits;
         gain_t* immolate;
         gain_t* immolate_crits;
         gain_t* soul_fire;
         gain_t* infernal;
         gain_t* shadowburn_shard;
         gain_t* inferno;
-        gain_t* reverse_entropy;
+        gain_t* chaos_shards;
 
         gain_t* miss_refund;
 
         gain_t* shadow_bolt;
         gain_t* doom;
         gain_t* demonic_meteor;
+        gain_t* baleful_invocation;
 
-        gain_t* soulsnatcher;
-        gain_t* t19_2pc_demonology;
-
-        gain_t* affliction_t20_2pc;
-        gain_t* destruction_t20_2pc;
+        gain_t* memory_of_lucid_dreams;
       } gains;
 
       // Procs
@@ -382,7 +384,6 @@ namespace warlock
         proc_t* soul_conduit;
         //aff
         proc_t* nightfall;
-        proc_t* affliction_t21_2pc;
         //demo
         proc_t* demonic_calling;
         proc_t* souls_consumed;
@@ -394,7 +395,6 @@ namespace warlock
         proc_t* dreadstalker_debug;
         proc_t* summon_random_demon;
         proc_t* portal_summon;
-        proc_t* demonology_t20_2pc;
         //destro
         proc_t* reverse_entropy;
       } procs;
@@ -404,10 +404,10 @@ namespace warlock
         spell_t* melee;
         spell_t* seed_of_corruption_aoe;
         spell_t* implosion_aoe;
+        const spell_data_t* memory_of_lucid_dreams_base;
       } spells;
 
       int initial_soul_shards;
-      bool allow_sephuz;
       std::string default_pet;
       timespan_t shard_react;
 
@@ -426,6 +426,15 @@ namespace warlock
       void      init_resources( bool force ) override;
       void      reset() override;
       void      create_options() override;
+      int       get_spawning_imp_count();
+      timespan_t time_to_imps(int count);
+      int       imps_spawned_during( timespan_t period );
+      void      trigger_memory_of_lucid_dreams( double gain );
+      void      vision_of_perfection_proc() override;
+      void      vision_of_perfection_proc_destro();
+      void      vision_of_perfection_proc_aff();
+      void      vision_of_perfection_proc_demo();
+      void      darkglare_extension_helper( warlock_t* p, timespan_t darkglare_extension );
       action_t* create_action( const std::string& name, const std::string& options ) override;
       pet_t*    create_pet( const std::string& name, const std::string& type = std::string() ) override;
       void      create_pets() override;
@@ -450,7 +459,8 @@ namespace warlock
       double    composite_armor() const override;
       void      halt() override;
       void      combat_begin() override;
-      expr_t*   create_expression( const std::string& name_str ) override;
+      void      init_assessors() override;
+      std::unique_ptr<expr_t> create_expression( const std::string& name_str ) override;
       std::string       default_potion() const override;
       std::string       default_flask() const override;
       std::string       default_food() const override;
@@ -478,7 +488,7 @@ namespace warlock
       void init_procs_affliction();
       void create_options_affliction();
       void create_apl_affliction();
-      expr_t*   create_aff_expression(const std::string& name_str);
+      std::unique_ptr<expr_t>   create_aff_expression(const std::string& name_str);
 
       // sc_warlock_demonology
       action_t* create_action_demonology( const std::string& action_name, const std::string& options_str );
@@ -504,7 +514,7 @@ namespace warlock
       pet_t* create_main_pet(const std::string& pet_name, const std::string& options_str);
       pet_t* create_demo_pet(const std::string& pet_name, const std::string& options_str);
       void   create_all_pets();
-      expr_t*   create_pet_expression(const std::string& name_str);
+      std::unique_ptr<expr_t> create_pet_expression(const std::string& name_str);
 
     private:
       void apl_precombat();
@@ -640,6 +650,8 @@ namespace warlock
 
           if (resource_current == RESOURCE_SOUL_SHARD && p()->in_combat)
           {
+            p()->trigger_memory_of_lucid_dreams( last_resource_cost );
+
             // lets try making all lock specs not react instantly to shard gen
             if (p()->talents.soul_conduit->ok())
             {
@@ -702,7 +714,7 @@ namespace warlock
           }
         }
 
-        expr_t* create_expression(const std::string& name_str) override
+        std::unique_ptr<expr_t> create_expression(const std::string& name_str) override
         {
           if (name_str == "target_uas")
           {
@@ -721,7 +733,7 @@ namespace warlock
           {
             return make_fn_expr(name_str, [this]()
             {
-              timespan_t con = timespan_t::from_millis(0.0);
+              timespan_t con = 0_ms;
 
               for (int i = 0; i < MAX_UAS; i++)
               {
@@ -848,6 +860,43 @@ namespace warlock
 
           if ( p()->buffs.grimoire_of_sacrifice->check() )
             p()->buffs.grimoire_of_sacrifice->expire();
+        }
+      };
+
+      //Event for spawning wild imps for Demonology
+      //Placed in warlock.cpp for expression purposes
+      struct imp_delay_event_t : public player_event_t
+      {
+        timespan_t diff;
+
+        imp_delay_event_t( warlock_t* p, double delay, double exp ) :
+          player_event_t( *p, timespan_t::from_millis( delay ) ) 
+        {
+          diff = timespan_t::from_millis(exp - delay);
+        }
+
+        virtual const char* name() const override
+        {
+          return  "imp_delay";
+        }
+
+        virtual void execute() override
+        {
+          warlock_t* p = static_cast< warlock_t* >( player() );
+
+          p->warlock_pet_list.wild_imps.spawn();
+          expansion::bfa::trigger_leyshocks_grand_compilation( STAT_HASTE_RATING, p );
+
+          //Remove this event from the vector
+          auto it = std::find(p->wild_imp_spawns.begin(), p->wild_imp_spawns.end(), this);
+          if(it != p->wild_imp_spawns.end())
+            p->wild_imp_spawns.erase(it);
+        }
+
+        //Used for APL expressions to estimate when imp is "supposed" to spawn
+        timespan_t expected_time()
+        {
+          return std::max(0_ms, this->remains()+diff);
         }
       };
     }
